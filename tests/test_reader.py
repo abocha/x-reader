@@ -147,3 +147,28 @@ def test_twscrape_reader_thread_returns_plain_dicts():
         {"id": 124, "user": {"username": "OpenAI"}},
         {"id": 999, "user": {"username": "OpenAI"}},
     ]
+
+
+def test_twscrape_reader_user_posts_returns_none_when_user_missing():
+    reader_module = importlib.import_module("x_reader.reader")
+    TwscrapeReader = reader_module.TwscrapeReader
+
+    class FakeApi:
+        async def user_by_login(self, username: str):
+            assert username == "does_not_exist"
+            return None
+
+        async def user_tweets(self, uid: int, limit: int):
+            raise AssertionError("user_tweets must not be called")
+            yield
+
+    reader = TwscrapeReader(api=FakeApi())
+
+    result = asyncio.run(
+        reader.user_posts(
+            username="does_not_exist",
+            limit=20,
+        )
+    )
+
+    assert result is None

@@ -522,3 +522,130 @@ def test_search_endpoint_allows_search_without_authors():
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == ["1", "2"]
+
+
+def test_user_posts_endpoint_returns_404_when_user_missing():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def user_posts(
+            self,
+            username: str,
+            limit: int,
+        ):
+            assert username == "does_not_exist"
+            assert limit == 20
+            return None
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get("/v1/users/does_not_exist/posts")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "User not found"}
+
+
+def test_api_rate_limit_returns_429_after_limit():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def tweet(self, tweet_id: int):
+            return {
+                "id": tweet_id,
+                "url": f"https://x.com/OpenAI/status/{tweet_id}",
+                "date": "2026-09-03T19:00:00Z",
+                "rawContent": "Test",
+                "user": {
+                    "username": "OpenAI",
+                    "displayname": "OpenAI",
+                },
+                "replyCount": 0,
+                "retweetCount": 0,
+                "likeCount": 0,
+                "quoteCount": 0,
+                "bookmarkedCount": 0,
+                "viewCount": 0,
+                "conversationId": tweet_id,
+                "inReplyToTweetId": None,
+                "links": [],
+                "media": {
+                    "photos": [],
+                    "videos": [],
+                    "animated": [],
+                },
+            }
+
+    client = TestClient(
+        create_app(
+            FakeReader(),
+            rate_limit=2,
+            rate_window_seconds=3600,
+        )
+    )
+
+    assert client.get("/v1/tweets/1").status_code == 200
+    assert client.get("/v1/tweets/2").status_code == 200
+
+    response = client.get("/v1/tweets/3")
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": "Rate limit exceeded"}
+
+
+def test_api_rate_limit_is_separate_per_client_ip():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def tweet(self, tweet_id: int):
+            return {
+                "id": tweet_id,
+                "url": f"https://x.com/OpenAI/status/{tweet_id}",
+                "date": "2026-09-03T19:00:00Z",
+                "rawContent": "Test",
+                "user": {
+                    "username": "OpenAI",
+                    "displayname": "OpenAI",
+                },
+                "replyCount": 0,
+                "retweetCount": 0,
+                "likeCount": 0,
+                "quoteCount": 0,
+                "bookmarkedCount": 0,
+                "viewCount": 0,
+                "conversationId": tweet_id,
+                "inReplyToTweetId": None,
+                "links": [],
+                "media": {
+                    "photos": [],
+                    "videos": [],
+                    "animated": [],
+                },
+            }
+
+    client = TestClient(
+        create_app(
+            FakeReader(),
+            rate_limit=1,
+            rate_window_seconds=3600,
+        )
+    )
+
+    first = client.get(
+        "/v1/tweets/1",
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+    same_ip = client.get(
+        "/v1/tweets/2",
+        headers={"X-Forwarded-For": "203.0.113.10"},
+    )
+    other_ip = client.get(
+        "/v1/tweets/3",
+        headers={"X-Forwarded-For": "203.0.113.20"},
+    )
+
+    assert first.status_code == 200
+    assert same_ip.status_code == 429
+    assert other_ip.status_code == 200

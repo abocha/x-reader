@@ -27,8 +27,11 @@ class TwscrapeReader:
         self,
         username: str,
         limit: int,
-    ) -> list[dict]:
+    ) -> list[dict] | None:
         user = await self.api.user_by_login(username)
+
+        if user is None:
+            return None
 
         results = []
 

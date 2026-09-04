@@ -1,20 +1,52 @@
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from x_reader.normalize import normalize_tweet
 from x_reader.reader import TwscrapeReader
+from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.search import build_search_query, filter_search_results, validate_authors
 from x_reader.thread import filter_author_thread
 
 
-def create_app(reader: Any = None) -> FastAPI:
+def create_app(
+    reader: Any = None,
+    rate_limit: int = 60,
+    rate_window_seconds: float = 3600,
+) -> FastAPI:
     app = FastAPI()
 
     if reader is None:
         reader = TwscrapeReader()
 
     app.state.reader = reader
+    app.state.rate_limiter = SlidingWindowRateLimiter(
+        limit=rate_limit,
+        window_seconds=rate_window_seconds,
+    )
+
+    @app.middleware("http")
+    async def enforce_rate_limit(request, call_next):
+        forwarded_for = request.headers.get("x-forwarded-for")
+
+        if forwarded_for:
+            client_key = forwarded_for.rsplit(",", 1)[-1].strip()
+        elif request.client is not None:
+            client_key = request.client.host
+        else:
+            client_key = "unknown"
+
+        if (
+            request.url.path.startswith("/v1/")
+            and not app.state.rate_limiter.allow(client_key)
+        ):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+
+        return await call_next(request)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -65,6 +97,12 @@ def create_app(reader: Any = None) -> FastAPI:
             username=username,
             limit=limit,
         )
+
+        if results is None:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found",
+            )
 
         return [
             normalize_tweet(tweet)
