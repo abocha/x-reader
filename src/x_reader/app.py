@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Path as ApiPath, Query
 from fastapi.responses import JSONResponse
 
 from x_reader.normalize import normalize_tweet
@@ -44,6 +44,9 @@ def create_app(
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded"},
+                headers={
+                    "Retry-After": str(int(rate_window_seconds)),
+                },
             )
 
         return await call_next(request)
@@ -93,6 +96,14 @@ def create_app(
         username: str,
         limit: int = Query(default=20, ge=1, le=50),
     ) -> list[dict]:
+        try:
+            validate_authors([username])
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=str(exc),
+            ) from exc
+
         results = await app.state.reader.user_posts(
             username=username,
             limit=limit,
@@ -111,7 +122,7 @@ def create_app(
 
     @app.get("/v1/tweets/{tweet_id}")
     async def tweet(
-        tweet_id: int,
+        tweet_id: int = ApiPath(..., gt=0),
     ) -> dict:
         result = await app.state.reader.tweet(tweet_id=tweet_id)
 

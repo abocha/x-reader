@@ -649,3 +649,80 @@ def test_api_rate_limit_is_separate_per_client_ip():
     assert first.status_code == 200
     assert same_ip.status_code == 429
     assert other_ip.status_code == 200
+
+
+def test_user_posts_endpoint_rejects_invalid_username():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def user_posts(self, username: str, limit: int):
+            raise AssertionError("reader must not be called")
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get("/v1/users/bad%29username/posts")
+
+    assert response.status_code == 422
+
+
+def test_tweet_endpoint_rejects_non_positive_id():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def tweet(self, tweet_id: int):
+            raise AssertionError("reader must not be called")
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get("/v1/tweets/0")
+
+    assert response.status_code == 422
+
+
+def test_rate_limit_response_has_retry_after():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def tweet(self, tweet_id: int):
+            return {
+                "id": tweet_id,
+                "url": f"https://x.com/OpenAI/status/{tweet_id}",
+                "date": "2026-09-03T19:00:00Z",
+                "rawContent": "Test",
+                "user": {
+                    "username": "OpenAI",
+                    "displayname": "OpenAI",
+                },
+                "replyCount": 0,
+                "retweetCount": 0,
+                "likeCount": 0,
+                "quoteCount": 0,
+                "bookmarkedCount": 0,
+                "viewCount": 0,
+                "conversationId": tweet_id,
+                "inReplyToTweetId": None,
+                "links": [],
+                "media": {
+                    "photos": [],
+                    "videos": [],
+                    "animated": [],
+                },
+            }
+
+    client = TestClient(
+        create_app(
+            FakeReader(),
+            rate_limit=1,
+            rate_window_seconds=3600,
+        )
+    )
+
+    assert client.get("/v1/tweets/1").status_code == 200
+
+    response = client.get("/v1/tweets/2")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "3600"
