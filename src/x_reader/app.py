@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from x_reader.normalize import normalize_tweet
 from x_reader.reader import TwscrapeReader
-from x_reader.search import build_search_query, filter_search_results
+from x_reader.search import build_search_query, filter_search_results, validate_authors
 from x_reader.thread import filter_author_thread
 
 
@@ -22,15 +22,26 @@ def create_app(reader: Any = None) -> FastAPI:
 
     @app.get("/v1/search")
     async def search(
-        q: str,
-        authors_raw: str = Query(alias="from"),
+        q: str = Query(..., min_length=1, max_length=200),
+        authors_raw: str | None = Query(default=None, alias="from"),
         limit: int = Query(default=20, ge=1, le=50),
     ) -> list[dict]:
-        authors = [
-            author.strip()
-            for author in authors_raw.split(",")
-            if author.strip()
-        ]
+        if authors_raw is None:
+            authors = []
+        else:
+            authors = [
+                author.strip()
+                for author in authors_raw.split(",")
+                if author.strip()
+            ]
+
+            try:
+                validate_authors(authors)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=str(exc),
+                ) from exc
 
         query = build_search_query(q, authors)
         fetch_limit = max(20, limit)

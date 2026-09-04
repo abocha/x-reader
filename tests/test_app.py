@@ -398,3 +398,127 @@ def test_tweet_endpoint_returns_404_when_missing():
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Tweet not found"}
+
+
+def test_search_endpoint_rejects_invalid_author_username():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def search(self, query: str, limit: int):
+            raise AssertionError("reader must not be called")
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get(
+        "/v1/search",
+        params={
+            "q": "Astra",
+            "from": "OpenAI) OR from:evil",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_search_endpoint_rejects_empty_author_list():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def search(self, query: str, limit: int):
+            raise AssertionError("reader must not be called")
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get(
+        "/v1/search",
+        params={
+            "q": "Astra",
+            "from": " , , ",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "At least one author is required"
+    }
+
+
+def test_search_endpoint_rejects_overlong_query():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    class FakeReader:
+        async def search(self, query: str, limit: int):
+            raise AssertionError("reader must not be called")
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get(
+        "/v1/search",
+        params={
+            "q": "x" * 201,
+            "from": "OpenAI",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_search_endpoint_allows_search_without_authors():
+    app_module = importlib.import_module("x_reader.app")
+    create_app = app_module.create_app
+
+    def tweet(tweet_id: int, username: str) -> dict:
+        return {
+            "id": tweet_id,
+            "url": f"https://x.com/{username}/status/{tweet_id}",
+            "date": "2026-09-04T12:00:00Z",
+            "rawContent": f"Tweet {tweet_id}",
+            "user": {
+                "username": username,
+                "displayname": username,
+            },
+            "replyCount": 0,
+            "retweetCount": 0,
+            "likeCount": 0,
+            "quoteCount": 0,
+            "bookmarkedCount": 0,
+            "viewCount": 0,
+            "conversationId": tweet_id,
+            "inReplyToTweetId": None,
+            "links": [],
+            "media": {
+                "photos": [],
+                "videos": [],
+                "animated": [],
+            },
+        }
+
+    class FakeReader:
+        async def search(self, query: str, limit: int):
+            assert query == "Astra OR GPT-6"
+            assert limit == 20
+
+            return [
+                tweet(1, "OpenAI"),
+                tweet(2, "sama"),
+                tweet(3, "someone_else"),
+            ]
+
+    client = TestClient(create_app(FakeReader()))
+
+    response = client.get(
+        "/v1/search",
+        params={
+            "q": "Astra OR GPT-6",
+            "limit": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["1", "2"]
