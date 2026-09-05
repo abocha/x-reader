@@ -1,15 +1,34 @@
+import os
+from pathlib import Path
 from typing import Any
 
 from twscrape import API
 
 
+def default_db_path() -> Path:
+    configured = os.environ.get("X_READER_DB_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    return (Path(__file__).resolve().parents[2] / "accounts.db").resolve()
+
+
 class TwscrapeReader:
     def __init__(
         self,
-        db_path: str = "accounts.db",
+        db_path: str | Path | None = None,
         api: Any = None,
     ) -> None:
-        self.api = api or API(db_path)
+        if api is not None:
+            self.api = api
+            return
+
+        resolved_db_path = (
+            Path(db_path).expanduser().resolve()
+            if db_path is not None
+            else default_db_path()
+        )
+        self.api = API(str(resolved_db_path))
 
     async def search(
         self,

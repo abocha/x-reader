@@ -146,7 +146,10 @@ def create_app(
             limit=fetch_limit,
         )
 
-        filtered = filter_author_thread(results)
+        filtered = filter_author_thread(
+            results,
+            anchor_tweet_id=tweet_id,
+        )
 
         return [
             normalize_tweet(tweet)
