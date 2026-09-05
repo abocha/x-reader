@@ -193,7 +193,7 @@ tunnel-client run \
   --health.listen-addr 127.0.0.1:8081
 ```
 
-Keep this process running while creating the ChatGPT plugin and during every MCP call.
+Keep this process running while creating the ChatGPT plugin and during every MCP call unless systemd supervision is configured as documented below.
 
 Useful local checks from a second SSH session:
 
@@ -282,15 +282,165 @@ In a fresh ChatGPT web conversation, the x-reader plugin successfully executed `
 ChatGPT -> custom plugin -> Secure MCP Tunnel -> tunnel-client -> x-reader MCP -> X
 ```
 
-The main remaining operational cleanup is to run the tunnel-client as a proper long-lived service once smoke testing is complete. Do not use `nohup`/`disown` as the permanent supervision mechanism.
+## Long-lived systemd service
+
+Do not keep an SSH terminal open permanently. Run `tunnel-client` as a systemd service so it survives logout, restarts on failure, and starts again after VPS reboot.
+
+First stop any foreground `tunnel-client run ...` process with Ctrl-C so it releases `127.0.0.1:8081`.
+
+Store the runtime API key in a root-readable EnvironmentFile rather than in the unit or shell history:
+
+```bash
+sudo install -d -m 0755 /etc/x-reader-tunnel
+
+read -rsp 'Runtime API key: ' CONTROL_PLANE_API_KEY
+echo
+
+printf 'CONTROL_PLANE_API_KEY=%s\nX_READER_DB_PATH=%s\n' \
+  "$CONTROL_PLANE_API_KEY" \
+  "/home/ubuntu/x-reader/accounts.db" \
+  | sudo tee /etc/x-reader-tunnel/env >/dev/null
+
+unset CONTROL_PLANE_API_KEY
+sudo chown root:root /etc/x-reader-tunnel/env
+sudo chmod 600 /etc/x-reader-tunnel/env
+```
+
+Verify the file without printing the key:
+
+```bash
+sudo awk -F= '
+  $1=="CONTROL_PLANE_API_KEY" {print "CONTROL_PLANE_API_KEY=SET"}
+  $1=="X_READER_DB_PATH" {print}
+' /etc/x-reader-tunnel/env
+```
+
+Create `/etc/systemd/system/x-reader-tunnel.service`:
+
+```bash
+sudo tee /etc/systemd/system/x-reader-tunnel.service >/dev/null <<'EOF'
+[Unit]
+Description=x-reader Secure MCP Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/x-reader
+EnvironmentFile=/etc/x-reader-tunnel/env
+ExecStart=/usr/local/bin/tunnel-client run --profile-file /home/ubuntu/.config/tunnel-client/x-reader.yaml --health.listen-addr 127.0.0.1:8081
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Start and inspect it before enabling boot startup:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start x-reader-tunnel
+sleep 3
+sudo systemctl --no-pager --full status x-reader-tunnel
+```
+
+Expected state:
+
+```text
+Active: active (running)
+```
+
+Readiness check:
+
+```bash
+curl -i http://127.0.0.1:8081/readyz
+```
+
+Known-good result:
+
+```text
+HTTP/1.1 200 OK
+
+ready
+```
+
+Control Plane polling check:
+
+```bash
+curl -s http://127.0.0.1:8081/metrics \
+  | grep -E 'commands_poll|control_plane'
+```
+
+The critical signal is that this gauge is non-zero:
+
+```text
+commands_poll_last_successful_timestamp_seconds
+```
+
+A known-good live run also showed `commands_poll_cycles_total > 0` and poll latency with `error="false"`. A roughly 30-second completed poll is not itself suspicious because the Control Plane uses long polling.
+
+After the service is healthy, enable it on boot:
+
+```bash
+sudo systemctl enable x-reader-tunnel
+systemctl is-enabled x-reader-tunnel
+systemctl is-active x-reader-tunnel
+```
+
+Expected:
+
+```text
+enabled
+active
+```
+
+At this point the SSH session can be closed. systemd keeps the tunnel alive independently.
+
+Useful operator commands:
+
+```bash
+# status
+systemctl status x-reader-tunnel
+
+# last 100 log lines
+sudo journalctl -u x-reader-tunnel -n 100 --no-pager
+
+# follow logs live
+sudo journalctl -u x-reader-tunnel -f
+
+# restart
+sudo systemctl restart x-reader-tunnel
+
+# stop
+sudo systemctl stop x-reader-tunnel
+
+# readiness
+curl -fsS http://127.0.0.1:8081/readyz && echo
+
+# control-plane polling signal
+curl -s http://127.0.0.1:8081/metrics \
+  | grep -E 'commands_poll|control_plane'
+```
+
+Operational chain after reboot or SSH logout:
+
+```text
+systemd
+  -> tunnel-client
+  -> x-reader-mcp
+  -> ChatGPT plugin
+```
 
 ## Deferred cleanup
 
-Not required for first production use:
+Not required for current production use:
 
 - slim large media payloads only after inspecting real `twscrape` payload shapes
 - decide whether REST and MCP need a shared cross-process rate budget
-- configure long-lived supervision for tunnel-client
 - optionally document or automate SSH port-forward access to `/ui`
 
 Keep the implementation bounded. The current architecture is already sufficient for the intended single-user read-only workflow.
