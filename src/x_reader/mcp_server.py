@@ -8,6 +8,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from x_reader.normalize import normalize_tweet
+from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.reader import TwscrapeReader
 from x_reader.search import build_search_query, filter_search_results, validate_authors
 from x_reader.thread import filter_author_thread
@@ -42,9 +43,21 @@ def _validate_authors(authors: list[str]) -> None:
         raise ToolError(str(exc)) from exc
 
 
-def create_mcp_server(reader: Any = None) -> MCPServer:
+def create_mcp_server(
+    reader: Any = None,
+    rate_limit: int = 60,
+    rate_window_seconds: float = 3600,
+) -> MCPServer:
     reader = reader or TwscrapeReader()
+    limiter = SlidingWindowRateLimiter(
+        limit=rate_limit,
+        window_seconds=rate_window_seconds,
+    )
     mcp = MCPServer("x-reader")
+
+    def enforce_rate_limit() -> None:
+        if not limiter.allow("mcp"):
+            raise ToolError("Rate limit exceeded")
 
     @mcp.tool(
         title="Search X",
@@ -62,6 +75,7 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
     ) -> dict[str, Any]:
         author_list = authors or []
         _validate_authors(author_list)
+        enforce_rate_limit()
 
         search_query = build_search_query(query, author_list)
         results = await reader.search(search_query, max(20, limit))
@@ -86,6 +100,7 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
         limit: Limit = 20,
     ) -> dict[str, Any]:
         _validate_username(username)
+        enforce_rate_limit()
 
         results = await reader.user_posts(username=username, limit=limit)
         if results is None:
@@ -104,6 +119,7 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
         annotations=READ_ONLY,
     )
     async def get_x_post(tweet_id: TweetId) -> dict[str, Any]:
+        enforce_rate_limit()
         result = await reader.tweet(tweet_id=tweet_id)
         if result is None:
             raise ToolError(f"X post not found: {tweet_id}")
@@ -113,7 +129,7 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
     @mcp.tool(
         title="Get X thread",
         description=(
-            "Read the author's thread containing a specific X/Twitter post. Use this "
+            "Read the author's thread around a specific X/Twitter post. Use this "
             "when the user asks to read the thread, its continuation, or what the "
             "author wrote next."
         ),
@@ -123,6 +139,7 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
         tweet_id: TweetId,
         limit: Limit = 20,
     ) -> dict[str, Any]:
+        enforce_rate_limit()
         results = await reader.thread(
             tweet_id=tweet_id,
             limit=max(20, limit),
@@ -130,7 +147,10 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
         if not results:
             return {"posts": []}
 
-        filtered = filter_author_thread(results)
+        filtered = filter_author_thread(
+            results,
+            anchor_tweet_id=tweet_id,
+        )
         return {
             "posts": [normalize_tweet(tweet) for tweet in filtered[:limit]],
         }
@@ -141,5 +161,9 @@ def create_mcp_server(reader: Any = None) -> MCPServer:
 mcp = create_mcp_server()
 
 
-if __name__ == "__main__":
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
