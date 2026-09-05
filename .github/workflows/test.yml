@@ -2,28 +2,19 @@ name: tests
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   pytest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv sync
+      - run: uv sync --frozen
       - run: uv run pytest -q
-      - name: Commit refreshed lockfile
-        run: |
-          if ! git diff --quiet -- uv.lock; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add uv.lock
-            git commit -m "chore: refresh uv lock"
-            git push origin HEAD:${{ github.event.pull_request.head.ref }}
-          fi
