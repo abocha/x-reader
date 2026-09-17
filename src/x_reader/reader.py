@@ -42,6 +42,28 @@ class TwscrapeReader:
 
         return results
 
+    async def user(
+        self,
+        username: str,
+    ) -> dict | None:
+        result = await self.api.user_by_login(username)
+
+        if result is None:
+            return None
+
+        return result.dict()
+
+    async def user_about(
+        self,
+        username: str,
+    ) -> dict | None:
+        result = await self.api.user_about(username)
+
+        if result is None:
+            return None
+
+        return result.dict()
+
     async def user_posts(
         self,
         username: str,
@@ -59,6 +81,23 @@ class TwscrapeReader:
 
         return results
 
+    async def user_posts_and_replies(
+        self,
+        username: str,
+        limit: int,
+    ) -> list[dict] | None:
+        user = await self.api.user_by_login(username)
+
+        if user is None:
+            return None
+
+        results = []
+
+        async for tweet in self.api.user_tweets_and_replies(user.id, limit=limit):
+            results.append(tweet.dict())
+
+        return results
+
     async def tweet(
         self,
         tweet_id: int,
@@ -70,7 +109,19 @@ class TwscrapeReader:
 
         return result.dict()
 
-    async def thread(
+    async def tweet_replies(
+        self,
+        tweet_id: int,
+        limit: int,
+    ) -> list[dict]:
+        results = []
+
+        async for tweet in self.api.tweet_replies(tweet_id, limit=limit):
+            results.append(tweet.dict())
+
+        return results
+
+    async def conversation(
         self,
         tweet_id: int,
         limit: int,
@@ -81,3 +132,10 @@ class TwscrapeReader:
             results.append(tweet.dict())
 
         return results
+
+    async def thread(
+        self,
+        tweet_id: int,
+        limit: int,
+    ) -> list[dict]:
+        return await self.conversation(tweet_id, limit=limit)

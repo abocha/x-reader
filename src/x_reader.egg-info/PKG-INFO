@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: x-reader
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: fastapi<1,>=0.116
+Requires-Dist: mcp==2.1.1
+Requires-Dist: twscrape[curl]==0.20.1
+Requires-Dist: uvicorn[standard]<1,>=0.35
