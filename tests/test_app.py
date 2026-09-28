@@ -37,8 +37,8 @@ class FakeReader:
         self.calls.append(("user", username))
         return self.profile if username == "alice" else None
 
-    async def user_posts(self, username, limit):
-        self.calls.append(("user_posts", username, limit))
+    async def user_posts_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_by_id", user_id, limit))
         return self.timeline
 
     async def search(self, query, limit):
@@ -115,7 +115,7 @@ def test_user_posts_route_enforces_requested_limit():
     response = TestClient(create_app(reader)).get("/v1/users/alice/posts", params={"limit": 1})
     assert response.status_code == 200
     assert len(response.json()) == 1
-    assert ("user_posts", "alice", 40) in reader.calls
+    assert ("user_posts_by_id", 1, 40) in reader.calls
 
 
 def test_thread_route_keeps_array_contract():

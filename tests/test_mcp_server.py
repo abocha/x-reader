@@ -33,12 +33,12 @@ class FakeReader:
         self.calls.append(("user", username))
         return self.profile if username == "alice" else None
 
-    async def user_posts(self, username, limit):
-        self.calls.append(("user_posts", username, limit))
+    async def user_posts_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_by_id", user_id, limit))
         return self.timeline
 
-    async def user_posts_and_replies(self, username, limit):
-        self.calls.append(("user_posts_and_replies", username, limit))
+    async def user_posts_and_replies_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_and_replies_by_id", user_id, limit))
         return self.timeline
 
     async def user_about(self, username):

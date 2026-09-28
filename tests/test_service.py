@@ -40,12 +40,12 @@ class FakeReader:
     async def user_about(self, username):
         return {"account_based_in": "US"}
 
-    async def user_posts(self, username, limit):
-        self.calls.append(("user_posts", username, limit))
+    async def user_posts_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_by_id", user_id, limit))
         return self.timeline
 
-    async def user_posts_and_replies(self, username, limit):
-        self.calls.append(("user_posts_and_replies", username, limit))
+    async def user_posts_and_replies_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_and_replies_by_id", user_id, limit))
         return self.timeline
 
     async def search(self, query, limit):
@@ -92,6 +92,18 @@ async def test_timeline_classification_and_foreign_provenance(include_replies, i
         assert foreign["is_repost"] is False
         assert foreign["appeared_on_timeline_of"] == {"id": "1", "username": "alice"}
         assert result["posts"][1]["reposted_post"]["id"] == "30"
+
+
+@pytest.mark.parametrize("include_replies,method", [
+    (False, "user_posts_by_id"),
+    (True, "user_posts_and_replies_by_id"),
+])
+async def test_read_user_looks_up_profile_once_and_fetches_timeline_by_id(include_replies, method):
+    reader = FakeReader()
+    reader.timeline = [post(1)]
+    result = await XReaderService(reader).read_user("@alice", include_replies=include_replies)
+    assert [item["id"] for item in result["posts"]] == ["1"]
+    assert reader.calls == [("user", "alice"), (method, 1, 60)]
 
 
 async def test_pinned_posts_are_marked_and_sorted_by_creation():
@@ -173,6 +185,16 @@ async def test_search_rejects_missing_terms_and_naive_boundaries():
     with pytest.raises(ValueError, match="timezone-aware"):
         await XReaderService(reader).search(query="topic", since=datetime(2026, 1, 1))
     assert reader.calls == []
+
+
+async def test_multi_author_search_has_one_search_and_no_profile_lookups():
+    reader = FakeReader()
+    reader.search_items = [post(1), post(2, 2), post(3, 3)]
+    reader.search_items[1]["user"]["username"] = "BoB"
+    reader.search_items[-1]["user"]["username"] = "charlie"
+    result = await XReaderService(reader).search(authors=["@alice", "https://x.com/bob"])
+    assert [item["id"] for item in result["posts"]] == ["1", "2"]
+    assert reader.calls == [("search", "(from:alice OR from:bob)", 60)]
 
 
 async def test_missing_user_and_post_are_domain_errors():

@@ -85,21 +85,13 @@ class XReaderService:
             fetch_limit,
         )
 
-        unresolved_author_names = set()
-        author_ids = set()
-        for username in author_list:
-            user = await self.reader.user(username)
-            if user and user.get("id") is not None:
-                author_ids.add(str(user["id"]))
-            else:
-                unresolved_author_names.add(username.lower())
+        allowed_author_names = {username.lower() for username in author_list}
 
         filtered = []
         for item in raw:
             author = item.get("user") or {}
-            author_id = str(author["id"]) if author.get("id") is not None else None
             author_name = (author.get("username") or "").lower()
-            if author_list and author_id not in author_ids and author_name not in unresolved_author_names:
+            if author_list and author_name not in allowed_author_names:
                 continue
             created = timestamp(item.get("date"))
             if since and (created is None or created < since):
@@ -138,14 +130,11 @@ class XReaderService:
         fetch_limit = overfetch_limit(limit)
 
         if include_replies:
-            raw_items = await self.reader.user_posts_and_replies(
-                username, fetch_limit
+            raw_items = await self.reader.user_posts_and_replies_by_id(
+                user_id, fetch_limit
             )
         else:
-            raw_items = await self.reader.user_posts(username, fetch_limit)
-
-        if raw_items is None:
-            raise UserNotFound(f"X user not found: {username}")
+            raw_items = await self.reader.user_posts_by_id(user_id, fetch_limit)
 
         raw_items = _inject_pinned(raw_items, profile.get("pinnedIds") or [])
 

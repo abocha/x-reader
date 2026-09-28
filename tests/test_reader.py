@@ -300,6 +300,38 @@ def test_twscrape_reader_user_timelines(method, api_method, missing, empty):
 @pytest.mark.parametrize(
     ("method", "api_method"),
     [
+        ("user_posts_by_id", "user_tweets"),
+        ("user_posts_and_replies_by_id", "user_tweets_and_replies"),
+    ],
+)
+def test_twscrape_reader_id_timelines_skip_profile_lookup(method, api_method):
+    reader_module = importlib.import_module("x_reader.reader")
+    calls = []
+
+    class FakeTweet:
+        def dict(self):
+            return {"id": 10}
+
+    class FakeApi:
+        async def user_by_login(self, username):
+            raise AssertionError("ID timeline must not resolve username")
+
+        async def timeline(self, user_id, *, limit):
+            calls.append((api_method, user_id, limit))
+            yield FakeTweet()
+
+    setattr(FakeApi, api_method, FakeApi.timeline)
+    reader = reader_module.TwscrapeReader(api=FakeApi())
+
+    result = asyncio.run(getattr(reader, method)(user_id=42, limit=2))
+
+    assert result == [{"id": 10}]
+    assert calls == [(api_method, 42, 2)]
+
+
+@pytest.mark.parametrize(
+    ("method", "api_method"),
+    [
         ("tweet_replies", "tweet_replies"),
         ("conversation", "tweet_thread"),
         ("thread", "tweet_thread"),

@@ -74,9 +74,16 @@ class TwscrapeReader:
         if user is None:
             return None
 
+        return await self.user_posts_by_id(user.id, limit)
+
+    async def user_posts_by_id(
+        self,
+        user_id: int,
+        limit: int,
+    ) -> list[dict]:
         results = []
 
-        async for tweet in self.api.user_tweets(user.id, limit=limit):
+        async for tweet in self.api.user_tweets(user_id, limit=limit):
             results.append(tweet.dict())
 
         return results
@@ -91,9 +98,16 @@ class TwscrapeReader:
         if user is None:
             return None
 
+        return await self.user_posts_and_replies_by_id(user.id, limit)
+
+    async def user_posts_and_replies_by_id(
+        self,
+        user_id: int,
+        limit: int,
+    ) -> list[dict]:
         results = []
 
-        async for tweet in self.api.user_tweets_and_replies(user.id, limit=limit):
+        async for tweet in self.api.user_tweets_and_replies(user_id, limit=limit):
             results.append(tweet.dict())
 
         return results
