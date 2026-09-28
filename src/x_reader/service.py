@@ -14,6 +14,7 @@ from x_reader.filters import (
 )
 from x_reader.locators import parse_post_locator, parse_username
 from x_reader.normalize import (
+    PostDetail,
     normalize_about,
     normalize_tweet,
     normalize_user,
@@ -73,6 +74,7 @@ class XReaderService:
         include_replies: bool = True,
         include_reposts: bool = True,
         limit: int = 20,
+        detail: PostDetail = "full",
     ) -> dict[str, Any]:
         query = query.strip() if query is not None else None
         if query and len(query) > 200:
@@ -116,7 +118,7 @@ class XReaderService:
             filtered.append(item)
 
         filtered = sort_by_created_at(dedupe_by_id(filtered))[:limit]
-        return {"posts": [normalize_tweet(item) for item in filtered]}
+        return {"posts": [normalize_tweet(item, detail=detail) for item in filtered]}
 
     async def read_user(
         self,
@@ -126,6 +128,7 @@ class XReaderService:
         include_replies: bool = False,
         include_reposts: bool = False,
         include_about: bool = False,
+        detail: PostDetail = "full",
     ) -> dict[str, Any]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
@@ -166,7 +169,7 @@ class XReaderService:
 
         result: dict[str, Any] = {
             "user": normalize_user(profile),
-            "posts": [normalize_tweet(item) for item in kept],
+            "posts": [normalize_tweet(item, detail=detail) for item in kept],
         }
 
         if include_about:
@@ -187,6 +190,7 @@ class XReaderService:
             "conversation",
         ] = "none",
         limit: int = 20,
+        detail: PostDetail = "full",
         _include_anchor: bool = False,
     ) -> dict[str, Any]:
         if context not in (
@@ -205,7 +209,7 @@ class XReaderService:
         if anchor is None:
             raise PostNotFound(f"X post not found: {post_id}")
 
-        result = {"post": normalize_tweet(anchor)}
+        result = {"post": normalize_tweet(anchor, detail=detail)}
         if context == "none":
             return result
 
@@ -223,7 +227,7 @@ class XReaderService:
             parents = exclude_by_id([parent] if parent is not None else [], post_id)
             result["context"] = {
                 "type": context,
-                "posts": [normalize_tweet(item) for item in parents],
+                "posts": [normalize_tweet(item, detail=detail) for item in parents],
             }
             return result
 
@@ -246,7 +250,7 @@ class XReaderService:
                 ),
                 descending=False,
             )[:limit]
-            result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in thread]}
+            result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in thread]}
             return result
 
         if context == "replies":
@@ -258,7 +262,7 @@ class XReaderService:
                 ),
                 descending=False,
             )[:limit]
-            result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in replies]}
+            result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in replies]}
             return result
 
         conversation_id = anchor.get("conversationId") or anchor["id"]
@@ -274,5 +278,5 @@ class XReaderService:
             _prepare_context_items(items, post_id, include_anchor=_include_anchor),
             descending=False,
         )[:limit]
-        result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in items]}
+        result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in items]}
         return result

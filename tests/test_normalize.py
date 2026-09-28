@@ -50,6 +50,7 @@ def test_normalize_tweet_returns_compact_public_shape():
     }
 
     result = normalize_tweet(tweet)
+    assert normalize_tweet(tweet, detail="full") == result
 
     assert result == {
         "id": "2095601211869421726",
@@ -163,6 +164,47 @@ def test_normalize_tweet_preserves_reposted_post():
     assert result["reposted_post"]["id"] == "333"
     assert result["reposted_post"]["author"]["username"] == "original_author"
     assert result["reposted_post"]["text"] == "Original text"
+
+
+def test_compact_tweet_preserves_discovery_context_without_heavy_payloads():
+    preview = {
+        "id": 3, "url": "https://x.com/bob/status/3",
+        "date": "2026-09-01T00:00:00Z", "rawContent": "original",
+        "user": {"id": 4, "username": "bob", "displayname": "Bob"},
+        "links": [{"url": "https://example.com"}], "media": {"photos": ["large"]},
+    }
+    tweet = {
+        "id": 5, "url": "https://x.com/alice/status/5",
+        "date": "2026-09-02T00:00:00Z", "rawContent": "comment",
+        "user": {"id": 1, "username": "alice", "displayname": "Alice"},
+        "conversationId": 5, "inReplyToTweetId": 2, "lang": "en",
+        "is_pinned": True, "timeline_item_type": "reply",
+        "appeared_on_timeline_of": {"id": "1", "username": "alice"},
+        "quotedTweet": preview, "retweetedTweet": preview,
+        "links": [{"url": "https://example.com"}], "media": {"photos": ["large"]},
+        "replyCount": 10, "mentionedUsers": [{"id": 4}],
+        "hashtags": ["topic"], "possibly_sensitive": False, "card": {"title": "large"},
+    }
+
+    compact = normalize_tweet(tweet, detail="compact")
+    expected_preview = {
+        "id": "3", "url": "https://x.com/bob/status/3",
+        "created_at": "2026-09-01T00:00:00Z", "text": "original",
+        "author": {"id": "4", "username": "bob", "name": "Bob"},
+    }
+    assert compact == {
+        "id": "5", "url": "https://x.com/alice/status/5",
+        "created_at": "2026-09-02T00:00:00Z", "text": "comment",
+        "author": {"id": "1", "username": "alice", "name": "Alice"},
+        "is_reply": True, "is_repost": True, "is_quote": True, "is_pinned": True,
+        "conversation_id": "5", "reply_to_id": "2", "lang": "en",
+        "timeline_item_type": "reply",
+        "appeared_on_timeline_of": {"id": "1", "username": "alice"},
+        "quoted_post": expected_preview, "reposted_post": expected_preview,
+    }
+    full = normalize_tweet(tweet, detail="full")
+    assert full["quoted_post"]["media"] == preview["media"]
+    assert full["reposted_post"]["links"] == [{"url": "https://example.com", "text": None}]
 
 
 def test_normalize_tweet_tolerates_missing_optional_fields():
