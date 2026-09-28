@@ -1,6 +1,28 @@
 from datetime import datetime, timezone
 
 
+def dedupe_by_id(items: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    deduplicated = []
+
+    for item in items:
+        post_id = item.get("id")
+        if isinstance(post_id, bool) or not isinstance(post_id, (int, str)):
+            deduplicated.append(item)
+            continue
+
+        key = str(post_id)
+        if not key.strip():
+            deduplicated.append(item)
+            continue
+
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(item)
+
+    return deduplicated
+
+
 def timestamp(value) -> datetime | None:
     if isinstance(value, str):
         try:

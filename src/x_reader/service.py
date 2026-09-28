@@ -6,6 +6,7 @@ from typing import Any, Literal
 from x_reader.errors import PostNotFound, UserNotFound
 from x_reader.filters import (
     classify_timeline_item,
+    dedupe_by_id,
     sort_by_created_at,
     same_author,
     timestamp,
@@ -104,7 +105,7 @@ class XReaderService:
                 continue
             filtered.append(item)
 
-        filtered = sort_by_created_at(filtered)[:limit]
+        filtered = sort_by_created_at(dedupe_by_id(filtered))[:limit]
         return {"posts": [normalize_tweet(item) for item in filtered]}
 
     async def read_user(
@@ -151,7 +152,7 @@ class XReaderService:
                 entry["appeared_on_timeline_of"] = timeline_user
             kept.append(entry)
 
-        kept = sort_by_created_at(kept)[:limit]
+        kept = sort_by_created_at(dedupe_by_id(kept))[:limit]
 
         result: dict[str, Any] = {
             "user": normalize_user(profile),
@@ -203,14 +204,14 @@ class XReaderService:
                 if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
                 and same_author(item, anchor)
             ]
-            thread = sort_by_created_at(thread, descending=False)[:limit]
+            thread = sort_by_created_at(dedupe_by_id(thread), descending=False)[:limit]
             result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in thread]}
             return result
 
         if context == "replies":
             replies = await self.reader.tweet_replies(post_id, fetch_limit)
             replies = [item for item in replies if str(item.get("inReplyToTweetId")) == str(post_id)]
-            replies = sort_by_created_at(replies, descending=False)[:limit]
+            replies = sort_by_created_at(dedupe_by_id(replies), descending=False)[:limit]
             result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in replies]}
             return result
 
@@ -223,6 +224,6 @@ class XReaderService:
             for item in items
             if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
         ]
-        items = sort_by_created_at(items, descending=False)[:limit]
+        items = sort_by_created_at(dedupe_by_id(items), descending=False)[:limit]
         result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in items]}
         return result
