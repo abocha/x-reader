@@ -1,12 +1,8 @@
-from __future__ import annotations
-
-import importlib
-from typing import Any
-
 import pytest
 from mcp import Client
 
-from x_reader.normalize import normalize_tweet
+from x_reader.mcp_server import create_mcp_server
+
 
 pytestmark = pytest.mark.anyio
 
@@ -16,212 +12,133 @@ def anyio_backend():
     return "asyncio"
 
 
-def tweet(
-    tweet_id: int,
-    *,
-    username: str = "OpenAI",
-    text: str = "Test post",
-    date: str = "2026-09-05T00:00:00Z",
-    conversation_id: int | None = None,
-) -> dict[str, Any]:
+def post(post_id=123, author_id=1, *, reply_to=None):
     return {
-        "id": tweet_id,
-        "url": f"https://x.com/{username}/status/{tweet_id}",
-        "date": date,
-        "rawContent": text,
-        "user": {
-            "username": username,
-            "displayname": username,
-        },
-        "replyCount": 1,
-        "retweetCount": 2,
-        "likeCount": 3,
-        "quoteCount": 4,
-        "bookmarkedCount": 5,
-        "viewCount": 6,
-        "conversationId": conversation_id or tweet_id,
-        "inReplyToTweetId": None,
-        "links": [],
-        "media": {
-            "photos": [],
-            "videos": [],
-            "animated": [],
-        },
+        "id": post_id, "date": "2026-09-03T19:00:00Z", "rawContent": f"post {post_id}",
+        "user": {"id": author_id, "username": "alice" if author_id == 1 else "bob"},
+        "conversationId": 123, "inReplyToTweetId": reply_to,
     }
 
 
 class FakeReader:
-    def __init__(self) -> None:
-        self.search_results: list[dict] = []
-        self.user_results: list[dict] | None = []
-        self.tweet_result: dict | None = None
-        self.thread_results: list[dict] = []
-        self.calls: list[tuple] = []
+    def __init__(self):
+        self.profile = {"id": 1, "username": "alice", "pinnedIds": []}
+        self.search_items = [post()]
+        self.timeline = [post()]
+        self.posts = {123: post()}
+        self.conversation_items = [post(), post(124, reply_to=123), post(125, 2, reply_to=123)]
+        self.calls = []
 
-    async def search(self, query: str, limit: int) -> list[dict]:
+    async def user(self, username):
+        self.calls.append(("user", username))
+        return self.profile if username == "alice" else None
+
+    async def user_posts_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_by_id", user_id, limit))
+        return self.timeline
+
+    async def user_posts_and_replies_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_and_replies_by_id", user_id, limit))
+        return self.timeline
+
+    async def user_about(self, username):
+        return {"account_based_in": "US"}
+
+    async def search(self, query, limit):
         self.calls.append(("search", query, limit))
-        return self.search_results
+        return self.search_items
 
-    async def user_posts(self, username: str, limit: int) -> list[dict] | None:
-        self.calls.append(("user_posts", username, limit))
-        return self.user_results
-
-    async def tweet(self, tweet_id: int) -> dict | None:
+    async def tweet(self, tweet_id):
         self.calls.append(("tweet", tweet_id))
-        return self.tweet_result
+        return self.posts.get(tweet_id)
 
-    async def thread(self, tweet_id: int, limit: int) -> list[dict]:
-        self.calls.append(("thread", tweet_id, limit))
-        return self.thread_results
+    async def conversation(self, tweet_id, limit):
+        self.calls.append(("conversation", tweet_id, limit))
+        return self.conversation_items
 
-
-def build_server(reader: FakeReader):
-    module = importlib.import_module("x_reader.mcp_server")
-    return module.create_mcp_server(reader)
+    async def tweet_replies(self, tweet_id, limit):
+        return [post(125, 2, reply_to=123)]
 
 
-async def test_lists_four_read_only_x_tools():
-    reader = FakeReader()
-
-    async with Client(build_server(reader)) as client:
-        result = await client.list_tools()
-
-    tools = {tool.name: tool for tool in result.tools}
-    assert set(tools) == {
-        "search_x",
-        "get_x_user_posts",
-        "get_x_post",
-        "get_x_thread",
-    }
-
+async def test_lists_compatibility_and_rich_read_only_tools():
+    async with Client(create_mcp_server(FakeReader())) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    assert set(tools) == {"search_x", "get_x_user_posts", "get_x_post", "get_x_thread", "read_x_user", "read_x_post"}
     for tool in tools.values():
-        assert tool.annotations is not None
         assert tool.annotations.read_only_hint is True
-        assert tool.annotations.idempotent_hint is True
-        assert tool.annotations.open_world_hint is True
-
-    assert "what people" in (tools["search_x"].description or "").lower()
-    assert "x/twitter" in (tools["search_x"].description or "").lower()
+        assert tool.annotations.destructive_hint is False
+    assert "@handle" in tools["read_x_user"].description
+    assert "post URL" in tools["read_x_post"].description
 
 
-async def test_search_x_builds_author_query_filters_and_normalizes():
+async def test_compatibility_tools_delegate_and_preserve_response_shapes():
     reader = FakeReader()
-    allowed = tweet(1, username="OpenAI", text="Astra rollout")
-    unrelated = tweet(2, username="someone_else", text="Astra rumor")
-    reader.search_results = [allowed, unrelated]
+    async with Client(create_mcp_server(reader)) as client:
+        search = await client.call_tool("search_x", {"query": "topic", "authors": ["@alice"]})
+        user = await client.call_tool("get_x_user_posts", {"username": "alice"})
+        single = await client.call_tool("get_x_post", {"tweet_id": 123})
+        thread = await client.call_tool("get_x_thread", {"tweet_id": 123})
+    assert search.is_error is user.is_error is single.is_error is thread.is_error is False
+    assert list(search.structured_content) == ["posts"]
+    assert [item["id"] for item in search.structured_content["posts"]] == ["123"]
+    assert [item["id"] for item in user.structured_content["posts"]] == ["123"]
+    assert list(single.structured_content) == ["post"]
+    assert single.structured_content["post"]["id"] == "123"
+    assert [item["id"] for item in thread.structured_content["posts"]] == ["123", "124"]
+    assert ("conversation", 123, 60) in reader.calls
 
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool(
-            "search_x",
-            {"query": "Astra", "authors": ["OpenAI"], "limit": 5},
-        )
 
+async def test_rich_tools_support_locators_profile_and_context():
+    reader = FakeReader()
+    async with Client(create_mcp_server(reader)) as client:
+        user = await client.call_tool("read_x_user", {"user": "https://x.com/alice", "include_about": True})
+        single = await client.call_tool("read_x_post", {"post": "https://twitter.com/alice/status/123", "context": "conversation"})
+    assert user.is_error is single.is_error is False
+    assert user.structured_content["user"]["id"] == "1"
+    assert user.structured_content["about"]["account_based_in"] == "US"
+    assert single.structured_content["post"]["id"] == "123"
+    assert single.structured_content["context"]["type"] == "conversation"
+    assert [item["id"] for item in single.structured_content["context"]["posts"]] == ["123", "124", "125"]
+
+
+async def test_search_x_accepts_authors_without_query():
+    reader = FakeReader()
+    async with Client(create_mcp_server(reader)) as client:
+        result = await client.call_tool("search_x", {"authors": ["https://x.com/alice"]})
     assert result.is_error is False
-    assert result.structured_content == {"posts": [normalize_tweet(allowed)]}
-    assert reader.calls == [("search", "(from:OpenAI) (Astra)", 20)]
+    assert [item["id"] for item in result.structured_content["posts"]] == ["123"]
+    assert ("search", "(from:alice)", 60) in reader.calls
 
 
-async def test_search_x_rejects_invalid_limit_before_reader_call():
+async def test_mcp_validation_domain_errors_and_rate_limit():
     reader = FakeReader()
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool(
-            "search_x",
-            {"query": "Astra", "limit": 0},
-        )
-
-    assert result.is_error is True
-    assert "limit" in result.content[0].text.lower()
-    assert reader.calls == []
-
-
-async def test_get_x_user_posts_returns_normalized_posts():
-    reader = FakeReader()
-    post = tweet(10, username="OpenAI")
-    reader.user_results = [post]
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool(
-            "get_x_user_posts",
-            {"username": "OpenAI", "limit": 3},
-        )
-
-    assert result.is_error is False
-    assert result.structured_content == {"posts": [normalize_tweet(post)]}
-    assert reader.calls == [("user_posts", "OpenAI", 3)]
+    async with Client(create_mcp_server(reader, rate_limit=5)) as client:
+        no_query = await client.call_tool("search_x", {})
+        invalid = await client.call_tool("search_x", {"query": "topic", "authors": ["bad)name"]})
+        missing_user = await client.call_tool("get_x_user_posts", {"username": "missing"})
+        missing_post = await client.call_tool("get_x_post", {"tweet_id": 999})
+        invalid_id = await client.call_tool("get_x_post", {"tweet_id": 0})
+        invalid_limit = await client.call_tool("read_x_user", {"user": "alice", "limit": 0})
+    assert all(result.is_error for result in [no_query, invalid, missing_user, missing_post, invalid_id, invalid_limit])
+    assert "query or authors" in no_query.content[0].text
+    assert "not found" in missing_user.content[0].text
+    assert "not found" in missing_post.content[0].text
+    assert ("search", "topic", 60) not in reader.calls
 
 
-async def test_get_x_user_posts_reports_missing_user():
-    reader = FakeReader()
-    reader.user_results = None
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool(
-            "get_x_user_posts",
-            {"username": "missing_user"},
-        )
-
-    assert result.is_error is True
-    assert "not found" in result.content[0].text.lower()
-
-
-async def test_get_x_post_returns_normalized_post():
-    reader = FakeReader()
-    post = tweet(42)
-    reader.tweet_result = post
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool("get_x_post", {"tweet_id": 42})
-
-    assert result.is_error is False
-    assert result.structured_content == {"post": normalize_tweet(post)}
-    assert reader.calls == [("tweet", 42)]
-
-
-async def test_get_x_post_rejects_non_positive_id():
-    reader = FakeReader()
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool("get_x_post", {"tweet_id": 0})
-
-    assert result.is_error is True
-    assert "tweet_id" in result.content[0].text
-    assert reader.calls == []
-
-
-async def test_get_x_thread_filters_to_root_author_and_sorts():
-    reader = FakeReader()
-    root = tweet(100, date="2026-09-05T00:00:00Z", conversation_id=100)
-    other_author = tweet(
-        101,
-        username="someone_else",
-        date="2026-09-05T00:01:00Z",
-        conversation_id=100,
-    )
-    continuation = tweet(
-        102,
-        date="2026-09-05T00:02:00Z",
-        conversation_id=100,
-    )
-    reader.thread_results = [root, continuation, other_author]
-
-    async with Client(build_server(reader)) as client:
-        result = await client.call_tool(
-            "get_x_thread",
-            {"tweet_id": 100, "limit": 10},
-        )
-
-    assert result.is_error is False
-    assert [post["id"] for post in result.structured_content["posts"]] == ["100", "102"]
-    assert reader.calls == [("thread", 100, 20)]
-
-
-async def test_get_x_thread_returns_empty_posts_for_missing_thread():
-    reader = FakeReader()
-    reader.thread_results = []
-
-    async with Client(build_server(reader)) as client:
+async def test_legacy_thread_returns_empty_posts_for_missing_anchor():
+    async with Client(create_mcp_server(FakeReader())) as client:
         result = await client.call_tool("get_x_thread", {"tweet_id": 999})
-
     assert result.is_error is False
     assert result.structured_content == {"posts": []}
+
+
+async def test_mcp_request_budget_is_separate():
+    reader = FakeReader()
+    async with Client(create_mcp_server(reader, rate_limit=1)) as client:
+        first = await client.call_tool("get_x_post", {"tweet_id": 123})
+        second = await client.call_tool("get_x_post", {"tweet_id": 123})
+    assert first.is_error is False
+    assert second.is_error is True
+    assert "rate limit" in second.content[0].text.lower()
+    assert reader.calls == [("tweet", 123)]

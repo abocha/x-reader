@@ -34,7 +34,7 @@ def test_project_imports_outside_repo_cwd(tmp_path: Path):
 
 
 def test_mcp_console_script_starts_outside_repo_cwd(tmp_path: Path):
-    script = Path(sys.executable).with_name("x-reader-mcp")
+    script = Path(sys.executable).with_name("x-reader-mcp.exe" if os.name == "nt" else "x-reader-mcp")
     assert script.exists(), f"missing console script: {script}"
 
     env = os.environ.copy()
@@ -104,12 +104,12 @@ def test_thread_filter_anchors_on_requested_tweet_id():
     assert [item["id"] for item in filtered] == [101, 102]
 
 
-def test_rest_thread_returns_empty_list_when_reader_has_no_results():
+def test_rest_thread_returns_empty_list_when_anchor_does_not_exist():
     app_module = importlib.import_module("x_reader.app")
 
     class FakeReader:
-        async def thread(self, tweet_id: int, limit: int) -> list[dict]:
-            return []
+        async def tweet(self, tweet_id: int):
+            return None
 
     client = TestClient(
         app_module.create_app(FakeReader()),

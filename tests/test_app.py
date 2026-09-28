@@ -1,728 +1,160 @@
-import importlib
-
 from fastapi.testclient import TestClient
 
-
-def test_health_endpoint():
-    app_module = importlib.import_module("x_reader.app")
-    app = getattr(app_module, "app", None)
-
-    assert app is not None
-
-    client = TestClient(app)
-    response = client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-
-
-def test_search_endpoint_uses_reader_and_returns_normalized_results():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = getattr(app_module, "create_app", None)
-
-    assert create_app is not None
-
-    def tweet(tweet_id: int, username: str, name: str) -> dict:
-        return {
-            "id": tweet_id,
-            "url": f"https://x.com/{username}/status/{tweet_id}",
-            "date": "2026-09-03T19:00:00Z",
-            "rawContent": f"Tweet {tweet_id}",
-            "user": {
-                "username": username,
-                "displayname": name,
-            },
-            "replyCount": 1,
-            "retweetCount": 2,
-            "likeCount": 3,
-            "quoteCount": 4,
-            "bookmarkedCount": 5,
-            "viewCount": 6,
-            "conversationId": tweet_id,
-            "inReplyToTweetId": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        }
-
-    class FakeReader:
-        async def search(self, query: str, limit: int) -> list[dict]:
-            assert query == "(from:OpenAI OR from:sama) (Astra)"
-            assert limit == 20
-
-            return [
-                tweet(1, "OpenAI", "OpenAI"),
-                tweet(2, "random_person", "Random Person"),
-                tweet(3, "sama", "Sam Altman"),
-            ]
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/search",
-        params={
-            "q": "Astra",
-            "from": "OpenAI,sama",
-            "limit": 2,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == [
-        {
-            "id": "1",
-            "url": "https://x.com/OpenAI/status/1",
-            "created_at": "2026-09-03T19:00:00Z",
-            "text": "Tweet 1",
-            "author": {
-                "username": "OpenAI",
-                "name": "OpenAI",
-            },
-            "metrics": {
-                "replies": 1,
-                "reposts": 2,
-                "likes": 3,
-                "quotes": 4,
-                "bookmarks": 5,
-                "views": 6,
-            },
-            "conversation_id": "1",
-            "reply_to_id": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        },
-        {
-            "id": "3",
-            "url": "https://x.com/sama/status/3",
-            "created_at": "2026-09-03T19:00:00Z",
-            "text": "Tweet 3",
-            "author": {
-                "username": "sama",
-                "name": "Sam Altman",
-            },
-            "metrics": {
-                "replies": 1,
-                "reposts": 2,
-                "likes": 3,
-                "quotes": 4,
-                "bookmarks": 5,
-                "views": 6,
-            },
-            "conversation_id": "3",
-            "reply_to_id": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        },
-    ]
-
-
-def test_default_app_has_reader():
-    app_module = importlib.import_module("x_reader.app")
-
-    assert hasattr(app_module.app.state, "reader")
-    assert app_module.app.state.reader is not None
-
-
-def test_user_posts_endpoint_returns_normalized_results():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    def tweet(tweet_id: int) -> dict:
-        return {
-            "id": tweet_id,
-            "url": f"https://x.com/OpenAI/status/{tweet_id}",
-            "date": "2026-09-03T19:00:00Z",
-            "rawContent": f"Tweet {tweet_id}",
-            "user": {
-                "username": "OpenAI",
-                "displayname": "OpenAI",
-            },
-            "replyCount": 1,
-            "retweetCount": 2,
-            "likeCount": 3,
-            "quoteCount": 4,
-            "bookmarkedCount": 5,
-            "viewCount": 6,
-            "conversationId": tweet_id,
-            "inReplyToTweetId": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        }
-
-    class FakeReader:
-        async def user_posts(
-            self,
-            username: str,
-            limit: int,
-        ) -> list[dict]:
-            assert username == "OpenAI"
-            assert limit == 2
-
-            return [
-                tweet(10),
-                tweet(11),
-            ]
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/users/OpenAI/posts",
-        params={"limit": 2},
-    )
-
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()] == ["10", "11"]
-    assert [item["author"]["username"] for item in response.json()] == [
-        "OpenAI",
-        "OpenAI",
-    ]
-
-
-def test_user_posts_endpoint_enforces_strict_limit():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    def tweet(tweet_id: int) -> dict:
-        return {
-            "id": tweet_id,
-            "url": f"https://x.com/OpenAI/status/{tweet_id}",
-            "date": "2026-09-03T19:00:00Z",
-            "rawContent": f"Tweet {tweet_id}",
-            "user": {
-                "username": "OpenAI",
-                "displayname": "OpenAI",
-            },
-            "replyCount": 0,
-            "retweetCount": 0,
-            "likeCount": 0,
-            "quoteCount": 0,
-            "bookmarkedCount": 0,
-            "viewCount": 0,
-            "conversationId": tweet_id,
-            "inReplyToTweetId": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        }
-
-    class FakeReader:
-        async def user_posts(
-            self,
-            username: str,
-            limit: int,
-        ) -> list[dict]:
-            assert username == "OpenAI"
-            assert limit == 3
-
-            return [
-                tweet(1),
-                tweet(2),
-                tweet(3),
-                tweet(4),
-                tweet(5),
-            ]
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/users/OpenAI/posts",
-        params={"limit": 3},
-    )
-
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()] == ["1", "2", "3"]
-
-
-def test_thread_endpoint_keeps_author_chain_sorts_and_enforces_limit():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    def tweet(
-        tweet_id: int,
-        *,
-        username: str,
-        conversation_id: int,
-        date: str,
-    ) -> dict:
-        return {
-            "id": tweet_id,
-            "url": f"https://x.com/{username}/status/{tweet_id}",
-            "date": date,
-            "rawContent": f"Tweet {tweet_id}",
-            "user": {
-                "username": username,
-                "displayname": username,
-            },
-            "replyCount": 0,
-            "retweetCount": 0,
-            "likeCount": 0,
-            "quoteCount": 0,
-            "bookmarkedCount": 0,
-            "viewCount": 0,
-            "conversationId": conversation_id,
-            "inReplyToTweetId": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        }
-
-    class FakeReader:
-        async def thread(
-            self,
-            tweet_id: int,
-            limit: int,
-        ) -> list[dict]:
-            assert tweet_id == 100
-            assert limit == 20
-
-            return [
-                tweet(
-                    103,
-                    username="OpenAI",
-                    conversation_id=100,
-                    date="2026-09-03T19:03:00Z",
-                ),
-                tweet(
-                    100,
-                    username="OpenAI",
-                    conversation_id=100,
-                    date="2026-09-03T19:00:00Z",
-                ),
-                tweet(
-                    102,
-                    username="random_reply",
-                    conversation_id=100,
-                    date="2026-09-03T19:02:00Z",
-                ),
-                tweet(
-                    101,
-                    username="OpenAI",
-                    conversation_id=100,
-                    date="2026-09-03T19:01:00Z",
-                ),
-                tweet(
-                    999,
-                    username="OpenAI",
-                    conversation_id=999,
-                    date="2026-09-03T18:00:00Z",
-                ),
-            ]
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/tweets/100/thread",
-        params={"limit": 2},
-    )
-
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()] == ["100", "101"]
-
-
-def test_tweet_endpoint_returns_normalized_tweet():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int) -> dict:
-            assert tweet_id == 123
-
-            return {
-                "id": 123,
-                "url": "https://x.com/OpenAI/status/123",
-                "date": "2026-09-03T19:00:00Z",
-                "rawContent": "Astra is here.",
-                "user": {
-                    "username": "OpenAI",
-                    "displayname": "OpenAI",
-                },
-                "replyCount": 1,
-                "retweetCount": 2,
-                "likeCount": 3,
-                "quoteCount": 4,
-                "bookmarkedCount": 5,
-                "viewCount": 6,
-                "conversationId": 123,
-                "inReplyToTweetId": None,
-                "links": [],
-                "media": {
-                    "photos": [],
-                    "videos": [],
-                    "animated": [],
-                },
-            }
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get("/v1/tweets/123")
-
-    assert response.status_code == 200
-    assert response.json()["id"] == "123"
-    assert response.json()["text"] == "Astra is here."
-    assert response.json()["author"]["username"] == "OpenAI"
-
-
-def test_tweet_endpoint_returns_404_when_missing():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int):
-            assert tweet_id == 999
-            return None
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get("/v1/tweets/999")
-
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Tweet not found"}
-
-
-def test_search_endpoint_rejects_invalid_author_username():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def search(self, query: str, limit: int):
-            raise AssertionError("reader must not be called")
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/search",
-        params={
-            "q": "Astra",
-            "from": "OpenAI) OR from:evil",
-            "limit": 3,
-        },
-    )
-
-    assert response.status_code == 422
-
-
-def test_search_endpoint_rejects_empty_author_list():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def search(self, query: str, limit: int):
-            raise AssertionError("reader must not be called")
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/search",
-        params={
-            "q": "Astra",
-            "from": " , , ",
-            "limit": 3,
-        },
-    )
-
-    assert response.status_code == 422
-    assert response.json() == {
-        "detail": "At least one author is required"
+from x_reader.app import app, create_app
+from x_reader.reader import TwscrapeReader
+
+
+POST_FIELDS = {
+    "id", "url", "created_at", "text", "author", "is_reply", "is_repost",
+    "is_quote", "is_pinned", "conversation_id", "reply_to_id", "metrics",
+    "links", "media", "lang", "mentions", "hashtags", "possibly_sensitive",
+    "card", "quoted_post", "reposted_post",
+}
+
+
+def post(post_id=123, *, author_id=1, username="alice", reply_to=None, conversation=123):
+    return {
+        "id": post_id, "url": f"https://x.com/{username}/status/{post_id}",
+        "date": "2026-09-03T19:00:00Z", "rawContent": "Astra is here.",
+        "user": {"id": author_id, "username": username, "displayname": "Alice"},
+        "replyCount": 1, "retweetCount": 2, "likeCount": 3,
+        "quoteCount": 4, "bookmarkedCount": 5, "viewCount": 6,
+        "conversationId": conversation, "inReplyToTweetId": reply_to,
+        "links": [], "media": {"photos": [], "videos": [], "animated": []},
     }
 
 
-def test_search_endpoint_rejects_overlong_query():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
+class FakeReader:
+    def __init__(self):
+        self.profile = {"id": 1, "username": "alice", "pinnedIds": []}
+        self.timeline = [post()]
+        self.search_items = [post()]
+        self.posts = {123: post()}
+        self.thread_items = [post()]
+        self.calls = []
 
-    class FakeReader:
-        async def search(self, query: str, limit: int):
-            raise AssertionError("reader must not be called")
+    async def user(self, username):
+        self.calls.append(("user", username))
+        return self.profile if username == "alice" else None
 
-    client = TestClient(create_app(FakeReader()))
+    async def user_posts_by_id(self, user_id, limit):
+        self.calls.append(("user_posts_by_id", user_id, limit))
+        return self.timeline
 
-    response = client.get(
-        "/v1/search",
-        params={
-            "q": "x" * 201,
-            "from": "OpenAI",
-            "limit": 3,
-        },
-    )
+    async def search(self, query, limit):
+        self.calls.append(("search", query, limit))
+        return self.search_items
 
-    assert response.status_code == 422
+    async def tweet(self, tweet_id):
+        self.calls.append(("tweet", tweet_id))
+        return self.posts.get(tweet_id)
+
+    async def conversation(self, tweet_id, limit):
+        self.calls.append(("conversation", tweet_id, limit))
+        return self.thread_items
 
 
-def test_search_endpoint_allows_search_without_authors():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
+def test_health_endpoint():
+    assert TestClient(create_app(FakeReader())).get("/health").json() == {"status": "ok"}
 
-    def tweet(tweet_id: int, username: str) -> dict:
-        return {
-            "id": tweet_id,
-            "url": f"https://x.com/{username}/status/{tweet_id}",
-            "date": "2026-09-04T12:00:00Z",
-            "rawContent": f"Tweet {tweet_id}",
-            "user": {
-                "username": username,
-                "displayname": username,
-            },
-            "replyCount": 0,
-            "retweetCount": 0,
-            "likeCount": 0,
-            "quoteCount": 0,
-            "bookmarkedCount": 0,
-            "viewCount": 0,
-            "conversationId": tweet_id,
-            "inReplyToTweetId": None,
-            "links": [],
-            "media": {
-                "photos": [],
-                "videos": [],
-                "animated": [],
-            },
-        }
 
-    class FakeReader:
-        async def search(self, query: str, limit: int):
-            assert query == "Astra OR GPT-6"
-            assert limit == 20
+def test_default_app_has_twscrape_reader_and_service():
+    assert isinstance(app.state.reader, TwscrapeReader)
+    assert app.state.service.reader is app.state.reader
 
-            return [
-                tweet(1, "OpenAI"),
-                tweet(2, "sama"),
-                tweet(3, "someone_else"),
-            ]
 
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get(
-        "/v1/search",
-        params={
-            "q": "Astra OR GPT-6",
-            "limit": 2,
-        },
-    )
-
+def test_post_endpoint_complete_public_shape():
+    response = TestClient(create_app(FakeReader())).get("/v1/tweets/123")
     assert response.status_code == 200
-    assert [item["id"] for item in response.json()] == ["1", "2"]
+    assert response.json() == {
+        "id": "123", "url": "https://x.com/alice/status/123",
+        "created_at": "2026-09-03T19:00:00Z", "text": "Astra is here.",
+        "author": {"id": "1", "username": "alice", "name": "Alice"},
+        "is_reply": False, "is_repost": False, "is_quote": False, "is_pinned": False,
+        "conversation_id": "123", "reply_to_id": None,
+        "metrics": {"replies": 1, "reposts": 2, "likes": 3, "quotes": 4, "bookmarks": 5, "views": 6},
+        "links": [], "media": {"photos": [], "videos": [], "animated": []},
+        "lang": None, "mentions": [], "hashtags": [], "possibly_sensitive": None,
+        "card": None, "quoted_post": None, "reposted_post": None,
+    }
 
 
-def test_user_posts_endpoint_returns_404_when_user_missing():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
+def test_search_route_preserves_array_contract_and_filters_authors():
+    reader = FakeReader()
+    reader.search_items.append(post(124, author_id=2, username="bob"))
+    response = TestClient(create_app(reader)).get("/v1/search", params={"q": "Astra", "from": "@alice", "limit": 2})
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["123"]
+    assert set(response.json()[0]) == POST_FIELDS
+    assert response.json()[0]["author"] == {"id": "1", "username": "alice", "name": "Alice"}
+    assert ("search", "(from:alice) (Astra)", 40) in reader.calls
 
-    class FakeReader:
-        async def user_posts(
-            self,
-            username: str,
-            limit: int,
-        ):
-            assert username == "does_not_exist"
-            assert limit == 20
-            return None
 
+def test_search_route_allows_query_without_authors_and_limits_results():
+    reader = FakeReader()
+    reader.search_items = [post(123), post(124)]
+    response = TestClient(create_app(reader)).get("/v1/search", params={"q": "Astra", "limit": 1})
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["123"]
+    assert ("search", "Astra", 40) in reader.calls
+
+
+def test_user_posts_route_keeps_array_contract_and_excludes_foreign_author():
+    reader = FakeReader()
+    reader.timeline.append(post(124, author_id=2, username="bob"))
+    response = TestClient(create_app(reader)).get("/v1/users/alice/posts")
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["123"]
+    assert set(response.json()[0]) == POST_FIELDS | {"timeline_item_type"}
+    assert response.json()[0]["timeline_item_type"] == "post"
+
+
+def test_user_posts_route_enforces_requested_limit():
+    reader = FakeReader()
+    reader.timeline = [post(123), post(124)]
+    response = TestClient(create_app(reader)).get("/v1/users/alice/posts", params={"limit": 1})
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert ("user_posts_by_id", 1, 40) in reader.calls
+
+
+def test_thread_route_keeps_array_contract():
+    reader = FakeReader()
+    reader.thread_items = [post(125, conversation=123, author_id=2, username="bob", reply_to=123), post(124, conversation=123, reply_to=123), post()]
+    response = TestClient(create_app(reader)).get("/v1/tweets/123/thread")
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == ["124", "123"]
+    assert all(set(item) == POST_FIELDS for item in response.json())
+    assert ("conversation", 123, 60) in reader.calls
+
+
+def test_thread_route_enforces_requested_limit():
+    reader = FakeReader()
+    reader.thread_items = [post(123), post(124, conversation=123, reply_to=123)]
+    response = TestClient(create_app(reader)).get("/v1/tweets/123/thread", params={"limit": 1})
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_route_validation_and_not_found_errors():
     client = TestClient(create_app(FakeReader()))
-
-    response = client.get("/v1/users/does_not_exist/posts")
-
-    assert response.status_code == 404
-    assert response.json() == {"detail": "User not found"}
-
-
-def test_api_rate_limit_returns_429_after_limit():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int):
-            return {
-                "id": tweet_id,
-                "url": f"https://x.com/OpenAI/status/{tweet_id}",
-                "date": "2026-09-03T19:00:00Z",
-                "rawContent": "Test",
-                "user": {
-                    "username": "OpenAI",
-                    "displayname": "OpenAI",
-                },
-                "replyCount": 0,
-                "retweetCount": 0,
-                "likeCount": 0,
-                "quoteCount": 0,
-                "bookmarkedCount": 0,
-                "viewCount": 0,
-                "conversationId": tweet_id,
-                "inReplyToTweetId": None,
-                "links": [],
-                "media": {
-                    "photos": [],
-                    "videos": [],
-                    "animated": [],
-                },
-            }
-
-    client = TestClient(
-        create_app(
-            FakeReader(),
-            rate_limit=2,
-            rate_window_seconds=3600,
-        )
-    )
-
-    assert client.get("/v1/tweets/1").status_code == 200
-    assert client.get("/v1/tweets/2").status_code == 200
-
-    response = client.get("/v1/tweets/3")
-
-    assert response.status_code == 429
-    assert response.json() == {"detail": "Rate limit exceeded"}
+    assert client.get("/v1/tweets/0").status_code == 422
+    assert client.get("/v1/tweets/999").json() == {"detail": "Tweet not found"}
+    assert client.get("/v1/users/missing/posts").json() == {"detail": "User not found"}
+    assert client.get("/v1/users/bad%29name/posts").status_code == 422
+    assert client.get("/v1/search", params={"q": "topic", "from": "bad)name"}).status_code == 422
+    assert client.get("/v1/search", params={"q": "topic", "from": " , , "}).json() == {"detail": "At least one author is required"}
+    assert client.get("/v1/search", params={"q": "x" * 201}).status_code == 422
+    assert client.get("/v1/search").status_code == 422
+    assert client.get("/v1/tweets/123/thread", params={"limit": 0}).status_code == 422
+    assert client.get("/v1/users/alice/posts", params={"limit": 51}).status_code == 422
 
 
-def test_api_rate_limit_is_separate_per_client_ip():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int):
-            return {
-                "id": tweet_id,
-                "url": f"https://x.com/OpenAI/status/{tweet_id}",
-                "date": "2026-09-03T19:00:00Z",
-                "rawContent": "Test",
-                "user": {
-                    "username": "OpenAI",
-                    "displayname": "OpenAI",
-                },
-                "replyCount": 0,
-                "retweetCount": 0,
-                "likeCount": 0,
-                "quoteCount": 0,
-                "bookmarkedCount": 0,
-                "viewCount": 0,
-                "conversationId": tweet_id,
-                "inReplyToTweetId": None,
-                "links": [],
-                "media": {
-                    "photos": [],
-                    "videos": [],
-                    "animated": [],
-                },
-            }
-
-    client = TestClient(
-        create_app(
-            FakeReader(),
-            rate_limit=1,
-            rate_window_seconds=3600,
-        )
-    )
-
-    first = client.get(
-        "/v1/tweets/1",
-        headers={"X-Forwarded-For": "203.0.113.10"},
-    )
-    same_ip = client.get(
-        "/v1/tweets/2",
-        headers={"X-Forwarded-For": "203.0.113.10"},
-    )
-    other_ip = client.get(
-        "/v1/tweets/3",
-        headers={"X-Forwarded-For": "203.0.113.20"},
-    )
-
-    assert first.status_code == 200
-    assert same_ip.status_code == 429
-    assert other_ip.status_code == 200
-
-
-def test_user_posts_endpoint_rejects_invalid_username():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def user_posts(self, username: str, limit: int):
-            raise AssertionError("reader must not be called")
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get("/v1/users/bad%29username/posts")
-
-    assert response.status_code == 422
-
-
-def test_tweet_endpoint_rejects_non_positive_id():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int):
-            raise AssertionError("reader must not be called")
-
-    client = TestClient(create_app(FakeReader()))
-
-    response = client.get("/v1/tweets/0")
-
-    assert response.status_code == 422
-
-
-def test_rate_limit_response_has_retry_after():
-    app_module = importlib.import_module("x_reader.app")
-    create_app = app_module.create_app
-
-    class FakeReader:
-        async def tweet(self, tweet_id: int):
-            return {
-                "id": tweet_id,
-                "url": f"https://x.com/OpenAI/status/{tweet_id}",
-                "date": "2026-09-03T19:00:00Z",
-                "rawContent": "Test",
-                "user": {
-                    "username": "OpenAI",
-                    "displayname": "OpenAI",
-                },
-                "replyCount": 0,
-                "retweetCount": 0,
-                "likeCount": 0,
-                "quoteCount": 0,
-                "bookmarkedCount": 0,
-                "viewCount": 0,
-                "conversationId": tweet_id,
-                "inReplyToTweetId": None,
-                "links": [],
-                "media": {
-                    "photos": [],
-                    "videos": [],
-                    "animated": [],
-                },
-            }
-
-    client = TestClient(
-        create_app(
-            FakeReader(),
-            rate_limit=1,
-            rate_window_seconds=3600,
-        )
-    )
-
-    assert client.get("/v1/tweets/1").status_code == 200
-
-    response = client.get("/v1/tweets/2")
-
-    assert response.status_code == 429
-    assert response.headers["retry-after"] == "3600"
+def test_rate_limit_response_has_retry_after_and_per_client_budget():
+    client = TestClient(create_app(FakeReader(), rate_limit=1, rate_window_seconds=3600))
+    first = client.get("/v1/tweets/123", headers={"X-Forwarded-For": "203.0.113.1"})
+    second = client.get("/v1/tweets/123", headers={"X-Forwarded-For": "203.0.113.1"})
+    other = client.get("/v1/tweets/123", headers={"X-Forwarded-For": "203.0.113.2"})
+    assert (first.status_code, second.status_code, other.status_code) == (200, 429, 200)
+    assert second.json() == {"detail": "Rate limit exceeded"}
+    assert second.headers["retry-after"] == "3600"
