@@ -7,6 +7,7 @@ from x_reader.errors import PostNotFound, UserNotFound
 from x_reader.filters import (
     classify_timeline_item,
     dedupe_by_id,
+    exclude_by_id,
     sort_by_created_at,
     same_author,
     timestamp,
@@ -47,6 +48,15 @@ def _build_search_query(
     if author_part and text_part:
         return f"{author_part} {text_part}"
     return author_part or text_part
+
+
+def _prepare_context_items(
+    items: list[dict[str, Any]], anchor_id: int, *, include_anchor: bool
+) -> list[dict[str, Any]]:
+    items = dedupe_by_id(items)
+    if not include_anchor:
+        items = exclude_by_id(items, anchor_id)
+    return items
 
 
 class XReaderService:
@@ -171,13 +181,21 @@ class XReaderService:
         *,
         context: Literal[
             "none",
+            "parent",
             "author_thread",
             "replies",
             "conversation",
         ] = "none",
         limit: int = 20,
+        _include_anchor: bool = False,
     ) -> dict[str, Any]:
-        if context not in ("none", "author_thread", "replies", "conversation"):
+        if context not in (
+            "none",
+            "parent",
+            "author_thread",
+            "replies",
+            "conversation",
+        ):
             raise ValueError(f"Unknown context: {context}")
         if limit < 1:
             raise ValueError("limit must be at least 1")
@@ -189,6 +207,24 @@ class XReaderService:
 
         result = {"post": normalize_tweet(anchor)}
         if context == "none":
+            return result
+
+        if context == "parent":
+            parent_id = anchor.get("inReplyToTweetId")
+            parent = None
+            if parent_id is not None:
+                try:
+                    parent_id = parse_post_locator(parent_id)
+                except ValueError:
+                    pass
+                else:
+                    parent = await self.reader.tweet(parent_id)
+
+            parents = exclude_by_id([parent] if parent is not None else [], post_id)
+            result["context"] = {
+                "type": context,
+                "posts": [normalize_tweet(item) for item in parents],
+            }
             return result
 
         fetch_limit = overfetch_limit(limit)
@@ -204,14 +240,24 @@ class XReaderService:
                 if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
                 and same_author(item, anchor)
             ]
-            thread = sort_by_created_at(dedupe_by_id(thread), descending=False)[:limit]
+            thread = sort_by_created_at(
+                _prepare_context_items(
+                    thread, post_id, include_anchor=_include_anchor
+                ),
+                descending=False,
+            )[:limit]
             result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in thread]}
             return result
 
         if context == "replies":
             replies = await self.reader.tweet_replies(post_id, fetch_limit)
             replies = [item for item in replies if str(item.get("inReplyToTweetId")) == str(post_id)]
-            replies = sort_by_created_at(dedupe_by_id(replies), descending=False)[:limit]
+            replies = sort_by_created_at(
+                _prepare_context_items(
+                    replies, post_id, include_anchor=_include_anchor
+                ),
+                descending=False,
+            )[:limit]
             result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in replies]}
             return result
 
@@ -224,6 +270,9 @@ class XReaderService:
             for item in items
             if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
         ]
-        items = sort_by_created_at(dedupe_by_id(items), descending=False)[:limit]
+        items = sort_by_created_at(
+            _prepare_context_items(items, post_id, include_anchor=_include_anchor),
+            descending=False,
+        )[:limit]
         result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in items]}
         return result

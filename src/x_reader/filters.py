@@ -23,6 +23,15 @@ def dedupe_by_id(items: list[dict]) -> list[dict]:
     return deduplicated
 
 
+def exclude_by_id(items: list[dict], post_id: str | int) -> list[dict]:
+    excluded_id = str(post_id)
+    return [
+        item
+        for item in items
+        if item.get("id") is None or str(item["id"]) != excluded_id
+    ]
+
+
 def timestamp(value) -> datetime | None:
     if isinstance(value, str):
         try:

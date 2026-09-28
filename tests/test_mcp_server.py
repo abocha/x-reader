@@ -69,6 +69,9 @@ async def test_lists_compatibility_and_rich_read_only_tools():
         assert tool.annotations.destructive_hint is False
     assert "@handle" in tools["read_x_user"].description
     assert "post URL" in tools["read_x_post"].description
+    assert "parent" in tools["read_x_post"].description
+    context_schema = tools["read_x_post"].input_schema["properties"]["context"]
+    assert "parent" in context_schema["enum"]
 
 
 async def test_compatibility_tools_delegate_and_preserve_response_shapes():
@@ -98,7 +101,26 @@ async def test_rich_tools_support_locators_profile_and_context():
     assert user.structured_content["about"]["account_based_in"] == "US"
     assert single.structured_content["post"]["id"] == "123"
     assert single.structured_content["context"]["type"] == "conversation"
-    assert [item["id"] for item in single.structured_content["context"]["posts"]] == ["123", "124", "125"]
+    assert [item["id"] for item in single.structured_content["context"]["posts"]] == ["124", "125"]
+    assert single.structured_content["post"]["id"] not in [
+        item["id"] for item in single.structured_content["context"]["posts"]
+    ]
+
+
+async def test_read_x_post_supports_parent_context():
+    reader = FakeReader()
+    reader.posts[124] = post(124, reply_to=123)
+
+    async with Client(create_mcp_server(reader)) as client:
+        result = await client.call_tool(
+            "read_x_post", {"post": 124, "context": "parent"}
+        )
+
+    assert result.is_error is False
+    assert result.structured_content["post"]["id"] == "124"
+    assert result.structured_content["context"]["type"] == "parent"
+    assert [item["id"] for item in result.structured_content["context"]["posts"]] == ["123"]
+    assert reader.calls == [("tweet", 124), ("tweet", 123)]
 
 
 async def test_search_x_accepts_authors_without_query():

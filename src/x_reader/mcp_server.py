@@ -86,7 +86,12 @@ def create_mcp_server(
     async def get_x_thread(tweet_id: TweetId, limit: Limit = 20) -> dict[str, Any]:
         enforce_rate_limit()
         try:
-            result = await service.read_post(tweet_id, context="author_thread", limit=limit)
+            result = await service.read_post(
+                tweet_id,
+                context="author_thread",
+                limit=limit,
+                _include_anchor=True,
+            )
         except PostNotFound:
             return {"posts": []}
         except ValueError as exc:
@@ -118,14 +123,22 @@ def create_mcp_server(
     @mcp.tool(
         title="Read X post",
         description=(
-            "Read a public X/Twitter post with optional author thread, direct replies, "
-            "or full conversation context. Post accepts a numeric ID or X/Twitter post URL."
+            "Read a public X/Twitter post with optional direct parent, author thread, "
+            "direct replies, or full conversation context. Context accepts none, parent, "
+            "author_thread, replies, or conversation. Post accepts a numeric ID or "
+            "X/Twitter post URL."
         ),
         annotations=READ_ONLY,
     )
     async def read_x_post(
         post: str | int,
-        context: Literal["none", "author_thread", "replies", "conversation"] = "none",
+        context: Literal[
+            "none",
+            "parent",
+            "author_thread",
+            "replies",
+            "conversation",
+        ] = "none",
         limit: Limit = 20,
     ) -> dict[str, Any]:
         return await call(service.read_post, post, context=context, limit=limit)

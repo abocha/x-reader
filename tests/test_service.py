@@ -153,10 +153,10 @@ async def test_foreign_repost_remains_foreign_to_requested_user():
 
 
 @pytest.mark.parametrize("context,expected", [
-    ("author_thread", ["100", "101", "103"]),
-    ("conversation", ["100", "101", "102", "103"]),
+    ("author_thread", ["100", "101"]),
+    ("conversation", ["100", "101", "102"]),
 ])
-async def test_context_from_continuation_uses_root_and_keeps_anchor(context, expected):
+async def test_context_from_continuation_keeps_root_and_excludes_anchor(context, expected):
     reader = FakeReader()
     root = post(100, date="2026-01-01T00:00:00Z")
     continuation = post(103, reply_to=101, date="2026-01-04T00:00:00Z")
@@ -172,13 +172,80 @@ async def test_context_from_continuation_uses_root_and_keeps_anchor(context, exp
     assert ("conversation", 100, 60) in reader.calls
 
 
+@pytest.mark.parametrize("context", ["author_thread", "conversation"])
+async def test_anchor_does_not_consume_context_limit(context):
+    reader = FakeReader()
+    reader.posts[100] = post(100, date="2026-01-01T00:00:00Z")
+    reader.conversation_items = [
+        post(100, date="2026-01-01T00:00:00Z"),
+        post(101, reply_to=100, date="2026-01-02T00:00:00Z"),
+        post(102, reply_to=100, date="2026-01-03T00:00:00Z"),
+    ]
+
+    result = await XReaderService(reader).read_post(100, context=context, limit=2)
+
+    assert [item["id"] for item in result["context"]["posts"]] == ["101", "102"]
+
+
+async def test_parent_context_reads_only_the_direct_parent():
+    reader = FakeReader()
+    parent = post(100, date="2026-01-01T00:00:00Z")
+    reader.posts[100] = parent
+    reader.posts[103] = post(103, reply_to=100)
+
+    result = await XReaderService(reader).read_post(103, context="parent")
+
+    assert reader.calls == [("tweet", 103), ("tweet", 100)]
+    assert result["context"]["type"] == "parent"
+    assert [item["id"] for item in result["context"]["posts"]] == ["100"]
+    assert result["context"]["posts"][0]["text"] == parent["rawContent"]
+
+
+async def test_parent_context_for_non_reply_does_not_fetch_another_post():
+    reader = FakeReader()
+    reader.posts[103] = post(103)
+
+    result = await XReaderService(reader).read_post(103, context="parent")
+
+    assert reader.calls == [("tweet", 103)]
+    assert result["context"] == {"type": "parent", "posts": []}
+
+
+async def test_parent_context_keeps_target_when_parent_is_missing():
+    reader = FakeReader()
+    reader.posts[103] = post(103, reply_to=100)
+
+    result = await XReaderService(reader).read_post(103, context="parent")
+
+    assert reader.calls == [("tweet", 103), ("tweet", 100)]
+    assert result["post"]["id"] == "103"
+    assert result["context"] == {"type": "parent", "posts": []}
+
+
+async def test_parent_context_excludes_anchor_if_lookup_returns_it():
+    reader = FakeReader()
+    reader.posts[103] = post(103, reply_to=103)
+
+    result = await XReaderService(reader).read_post(103, context="parent")
+
+    assert reader.calls == [("tweet", 103), ("tweet", 103)]
+    assert result["context"] == {"type": "parent", "posts": []}
+
+
 async def test_replies_only_include_direct_replies():
     reader = FakeReader()
     reader.posts[100] = post(100)
-    reader.reply_items = [post(101, 2, reply_to=100), post(102, 2, reply_to=101)]
-    result = await XReaderService(reader).read_post(100, context="replies")
+    reader.reply_items = [
+        post(100, reply_to=100, date="2026-01-01T00:00:00Z"),
+        post(101, 2, reply_to=100, date="2026-01-02T00:00:00Z"),
+        post(102, 2, reply_to=101),
+    ]
+    result = await XReaderService(reader).read_post(100, context="replies", limit=1)
     assert [item["id"] for item in result["context"]["posts"]] == ["101"]
-    assert ("tweet_replies", 100, 60) in reader.calls
+    assert result["post"]["id"] not in [
+        item["id"] for item in result["context"]["posts"]
+    ]
+    assert ("tweet_replies", 100, 40) in reader.calls
 
 
 @pytest.mark.parametrize("context", ["author_thread", "replies", "conversation"])
@@ -187,6 +254,7 @@ async def test_read_post_context_deduplicates_posts(context):
     reader.posts[100] = post(100)
     if context == "replies":
         reader.reply_items = [
+            post(100, reply_to=100),
             post(101, 2, reply_to=100),
             post(101, 2, reply_to=100),
             post(102, 2, reply_to=101),
@@ -199,11 +267,14 @@ async def test_read_post_context_deduplicates_posts(context):
             post(101, reply_to=100),
             post(102, 2, reply_to=100),
         ]
-        expected = ["100", "101"] if context == "author_thread" else ["100", "101", "102"]
+        expected = ["101"] if context == "author_thread" else ["101", "102"]
 
     result = await XReaderService(reader).read_post(100, context=context)
 
     assert [item["id"] for item in result["context"]["posts"]] == expected
+    assert result["post"]["id"] not in [
+        item["id"] for item in result["context"]["posts"]
+    ]
 
 
 @pytest.mark.parametrize("query,authors,upstream", [

@@ -101,7 +101,12 @@ def create_app(
         limit: int = Query(default=20, ge=1, le=50),
     ) -> list[dict]:
         try:
-            result = await app.state.service.read_post(tweet_id, context="author_thread", limit=limit)
+            result = await app.state.service.read_post(
+                tweet_id,
+                context="author_thread",
+                limit=limit,
+                _include_anchor=True,
+            )
         except PostNotFound:
             return []
         except ValueError as exc:
