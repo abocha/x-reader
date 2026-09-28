@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+
+PostDetail = Literal["compact", "full"]
 
 
 def _to_iso_from_msec(value: Any) -> str | None:
@@ -53,13 +55,15 @@ def _tweet_links(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _compact_tweet(tweet: dict[str, Any] | None) -> dict[str, Any] | None:
+def _nested_tweet_preview(
+    tweet: dict[str, Any] | None, *, detail: PostDetail
+) -> dict[str, Any] | None:
     if not isinstance(tweet, dict) or not tweet:
         return None
 
     user = tweet.get("user") or {}
 
-    return {
+    result = {
         "id": _str_or_none(tweet.get("id")),
         "url": tweet.get("url"),
         "created_at": _iso(tweet.get("date")),
@@ -69,9 +73,11 @@ def _compact_tweet(tweet: dict[str, Any] | None) -> dict[str, Any] | None:
             "username": user.get("username"),
             "name": user.get("displayname"),
         },
-        "links": _tweet_links(tweet),
-        "media": tweet.get("media") or {},
     }
+    if detail == "full":
+        result["links"] = _tweet_links(tweet)
+        result["media"] = tweet.get("media") or {}
+    return result
 
 
 def normalize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -113,7 +119,9 @@ def normalize_about(about: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def normalize_tweet(tweet: dict[str, Any], *, nested: bool = False) -> dict[str, Any]:
+def normalize_tweet(
+    tweet: dict[str, Any], *, detail: PostDetail = "full", nested: bool = False
+) -> dict[str, Any]:
     user = tweet.get("user") or {}
 
     if tweet.get("isQuoteStatus") is not None:
@@ -164,13 +172,17 @@ def normalize_tweet(tweet: dict[str, Any], *, nested: bool = False) -> dict[str,
         "reposted_post": None,
     }
 
+    if detail == "compact":
+        for field in ("metrics", "links", "media", "mentions", "hashtags", "possibly_sensitive", "card"):
+            del result[field]
+
     if tweet.get("timeline_item_type") is not None:
         result["timeline_item_type"] = tweet["timeline_item_type"]
     if tweet.get("appeared_on_timeline_of") is not None:
         result["appeared_on_timeline_of"] = tweet["appeared_on_timeline_of"]
 
     if not nested:
-        result["quoted_post"] = _compact_tweet(tweet.get("quotedTweet"))
-        result["reposted_post"] = _compact_tweet(tweet.get("retweetedTweet"))
+        result["quoted_post"] = _nested_tweet_preview(tweet.get("quotedTweet"), detail=detail)
+        result["reposted_post"] = _nested_tweet_preview(tweet.get("retweetedTweet"), detail=detail)
 
     return result

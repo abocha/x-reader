@@ -9,9 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116,<1",
   "mcp==2.1.1",
-  "ruff>=0.16.9",
   "twscrape[curl]==0.20.1",
-  "ty>=0.0.84",
   "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -22,6 +20,8 @@ x-reader-mcp = "x_reader.mcp_server:main"
 dev = [
   "httpx>=0.28,<1",
   "pytest>=8.4,<9",
+  "ruff>=0.16.9",
+  "ty>=0.0.84",
 ]
 
 [tool.setuptools.packages.find]

@@ -1311,9 +1311,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "mcp" },
-    { name = "ruff" },
     { name = "twscrape", extra = ["curl"] },
-    { name = "ty" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1321,15 +1319,15 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "pytest" },
+    { name = "ruff" },
+    { name = "ty" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
     { name = "mcp", specifier = "==2.1.1" },
-    { name = "ruff", specifier = ">=0.16.9" },
     { name = "twscrape", extras = ["curl"], specifier = "==0.20.1" },
-    { name = "ty", specifier = ">=0.0.84" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35,<1" },
 ]
 
@@ -1337,4 +1335,6 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pytest", specifier = ">=8.4,<9" },
+    { name = "ruff", specifier = ">=0.16.9" },
+    { name = "ty", specifier = ">=0.0.84" },
 ]

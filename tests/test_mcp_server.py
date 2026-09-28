@@ -70,6 +70,8 @@ async def test_lists_compatibility_and_rich_read_only_tools():
     assert "@handle" in tools["read_x_user"].description
     assert "post URL" in tools["read_x_post"].description
     assert "parent" in tools["read_x_post"].description
+    assert "compact" in (tools["search_x"].description or "")
+    assert "full" in (tools["read_x_user"].description or "")
     context_schema = tools["read_x_post"].input_schema["properties"]["context"]
     assert "parent" in context_schema["enum"]
 
@@ -89,6 +91,38 @@ async def test_compatibility_tools_delegate_and_preserve_response_shapes():
     assert single.structured_content["post"]["id"] == "123"
     assert [item["id"] for item in thread.structured_content["posts"]] == ["123", "124"]
     assert ("conversation", 123, 60) in reader.calls
+    for item in [search.structured_content["posts"][0], user.structured_content["posts"][0],
+                 single.structured_content["post"], thread.structured_content["posts"][0]]:
+        assert "metrics" in item
+
+
+async def test_mcp_detail_defaults_and_explicit_projection():
+    reader = FakeReader()
+    reader.posts[124] = post(124, reply_to=123)
+    async with Client(create_mcp_server(reader)) as client:
+        search_full = await client.call_tool("search_x", {"query": "topic"})
+        search_compact = await client.call_tool("search_x", {"query": "topic", "detail": "compact"})
+        user_compact = await client.call_tool("read_x_user", {"user": "alice"})
+        user_full = await client.call_tool("read_x_user", {"user": "alice", "detail": "full"})
+        post_full = await client.call_tool("read_x_post", {"post": 124, "context": "parent"})
+        post_compact = await client.call_tool("read_x_post", {"post": 124, "context": "parent", "detail": "compact"})
+    assert all(not result.is_error for result in (
+        search_full, search_compact, user_compact, user_full, post_full, post_compact
+    ))
+    assert "metrics" in search_full.structured_content["posts"][0]
+    assert "metrics" not in search_compact.structured_content["posts"][0]
+    assert "metrics" not in user_compact.structured_content["posts"][0]
+    assert "metrics" in user_full.structured_content["posts"][0]
+    assert "metrics" in post_full.structured_content["post"]
+    assert "metrics" not in post_compact.structured_content["post"]
+    assert "metrics" in post_full.structured_content["context"]["posts"][0]
+    assert "metrics" not in post_compact.structured_content["context"]["posts"][0]
+    assert reader.calls == [
+        ("search", "topic", 60), ("search", "topic", 60),
+        ("user", "alice"), ("user_posts_by_id", 1, 60),
+        ("user", "alice"), ("user_posts_by_id", 1, 60),
+        ("tweet", 124), ("tweet", 123), ("tweet", 124), ("tweet", 123),
+    ]
 
 
 async def test_rich_tools_support_locators_profile_and_context():

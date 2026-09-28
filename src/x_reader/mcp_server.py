@@ -8,6 +8,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from x_reader.errors import PostNotFound, UserNotFound
+from x_reader.normalize import PostDetail
 from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.reader import TwscrapeReader
 from x_reader.service import XReaderService
@@ -50,7 +51,8 @@ def create_mcp_server(
             "Search current public posts on X/Twitter. Use this when the user asks "
             "what people are saying on X/Twitter about a topic, event, person, "
             "product, announcement, rumor, outage, or current discussion. "
-            "Supply a query, authors, or both; authors accept usernames, @handles, and profile URLs."
+            "Supply a query, authors, or both; authors accept usernames, @handles, and profile URLs. "
+            "Use detail='compact' for broad discovery or larger result sets."
         ),
         annotations=READ_ONLY,
     )
@@ -58,8 +60,9 @@ def create_mcp_server(
         query: str | None = None,
         authors: list[str] | None = None,
         limit: Limit = 20,
+        detail: PostDetail = "full",
     ) -> dict[str, Any]:
-        return await call(service.search, query=query, authors=authors, limit=limit)
+        return await call(service.search, query=query, authors=authors, limit=limit, detail=detail)
 
     @mcp.tool(
         title="Get X user posts",
@@ -102,7 +105,8 @@ def create_mcp_server(
         title="Read X user",
         description=(
             "Read a user's recent public posts and profile, optionally including replies, "
-            "reposts, and account details. User accepts a username, @handle, or X/Twitter profile URL."
+            "reposts, and account details. User accepts a username, @handle, or X/Twitter profile URL. "
+            "Posts default to compact; use full for metrics, media, and richer metadata."
         ),
         annotations=READ_ONLY,
     )
@@ -112,12 +116,14 @@ def create_mcp_server(
         include_replies: bool = False,
         include_reposts: bool = False,
         include_about: bool = False,
+        detail: PostDetail = "compact",
     ) -> dict[str, Any]:
         return await call(
             service.read_user, user, limit=limit,
             include_replies=include_replies,
             include_reposts=include_reposts,
             include_about=include_about,
+            detail=detail,
         )
 
     @mcp.tool(
@@ -140,8 +146,9 @@ def create_mcp_server(
             "conversation",
         ] = "none",
         limit: Limit = 20,
+        detail: PostDetail = "full",
     ) -> dict[str, Any]:
-        return await call(service.read_post, post, context=context, limit=limit)
+        return await call(service.read_post, post, context=context, limit=limit, detail=detail)
 
     return mcp
 
