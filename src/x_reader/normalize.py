@@ -31,6 +31,20 @@ def _str_or_none(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
+def _iso(value: Any) -> str | None:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
+    return value.isoformat()
+
+
 def _tweet_links(tweet: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"url": link.get("url"), "text": link.get("text")}
@@ -48,7 +62,7 @@ def _compact_tweet(tweet: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         "id": _str_or_none(tweet.get("id")),
         "url": tweet.get("url"),
-        "created_at": tweet.get("date"),
+        "created_at": _iso(tweet.get("date")),
         "text": tweet.get("rawContent"),
         "author": {
             "id": _str_or_none(user.get("id")),
@@ -69,7 +83,7 @@ def normalize_user(user: dict[str, Any] | None) -> dict[str, Any] | None:
         "username": user.get("username"),
         "name": user.get("displayname"),
         "description": user.get("rawDescription"),
-        "created_at": user.get("created"),
+        "created_at": _iso(user.get("created")),
         "followers": user.get("followersCount"),
         "following": user.get("friendsCount"),
         "posts_count": user.get("statusesCount"),
@@ -110,7 +124,7 @@ def normalize_tweet(tweet: dict[str, Any], *, nested: bool = False) -> dict[str,
     result = {
         "id": _str_or_none(tweet.get("id")),
         "url": tweet.get("url"),
-        "created_at": tweet.get("date"),
+        "created_at": _iso(tweet.get("date")),
         "text": tweet.get("rawContent"),
         "author": {
             "id": _str_or_none(user.get("id")),
@@ -135,7 +149,7 @@ def normalize_tweet(tweet: dict[str, Any], *, nested: bool = False) -> dict[str,
         "media": tweet.get("media") or {},
         "lang": tweet.get("lang"),
         "mentions": [
-            {"username": mention.get("username"), "id": mention.get("id")}
+            {"username": mention.get("username"), "id": _str_or_none(mention.get("id"))}
             for mention in (tweet.get("mentionedUsers") or [])
             if isinstance(mention, dict)
         ],
@@ -149,6 +163,11 @@ def normalize_tweet(tweet: dict[str, Any], *, nested: bool = False) -> dict[str,
         "quoted_post": None,
         "reposted_post": None,
     }
+
+    if tweet.get("timeline_item_type") is not None:
+        result["timeline_item_type"] = tweet["timeline_item_type"]
+    if tweet.get("appeared_on_timeline_of") is not None:
+        result["appeared_on_timeline_of"] = tweet["appeared_on_timeline_of"]
 
     if not nested:
         result["quoted_post"] = _compact_tweet(tweet.get("quotedTweet"))

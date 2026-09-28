@@ -1,6 +1,6 @@
 import importlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from twscrape.models import AccountAbout, Media, TextLink, Tweet, User, UserRef
@@ -233,7 +233,7 @@ def test_normalize_user_upstream_fields(upstream_user):
         "username": "example",
         "name": "Example",
         "description": "Description",
-        "created_at": upstream_user.created,
+        "created_at": "2020-01-01T00:00:00Z",
         "followers": 10,
         "following": 20,
         "posts_count": 30,
@@ -329,8 +329,8 @@ def test_normalize_tweet_upstream_fields_and_unavailable_quote(upstream_tweet):
     result = normalize_tweet(upstream_tweet.dict())
     assert result["is_quote"] is True
     assert result["quoted_post"] is None
-    assert result["created_at"] == upstream_tweet.date
-    assert result["mentions"] == [{"username": "other", "id": 8}]
+    assert result["created_at"] == "2026-01-01T00:00:00Z"
+    assert result["mentions"] == [{"username": "other", "id": "8"}]
     assert result["hashtags"] == ["example"]
     assert result["links"] == [{"url": "https://example.com/", "text": "example.com"}]
     assert result["metrics"]["bookmarks"] == 5
@@ -358,7 +358,7 @@ def test_normalize_nested_upstream_links_and_cycles(upstream_tweet, field, outpu
     assert result[output] == {
         "id": "123",
         "url": upstream_tweet.url,
-        "created_at": upstream_tweet.date,
+        "created_at": "2026-01-01T00:00:00Z",
         "text": "Example post",
         "author": {"id": None, "username": None, "name": None},
         "links": [{"url": "https://example.com/", "text": "example.com"}],
@@ -391,5 +391,15 @@ def test_normalize_tweet_filters_invalid_optional_entries():
         "hashtags": [None, "example"],
     })
     assert result["links"] == [{"url": "https://example.com/", "text": None}]
-    assert result["mentions"] == [{"username": "other", "id": 8}]
+    assert result["mentions"] == [{"username": "other", "id": "8"}]
     assert result["hashtags"] == ["example"]
+
+
+def test_normalized_timestamps_use_utc_for_aware_values():
+    offset = timezone(timedelta(hours=7))
+    moment = datetime(2026, 1, 1, 7, 30, tzinfo=offset)
+    tweet = {"id": 1, "date": moment, "user": {"id": 2}, "quotedTweet": {"id": 3, "date": moment, "user": {"id": 4}}}
+    result = normalize_tweet(tweet)
+    assert result["created_at"] == "2026-01-01T00:30:00Z"
+    assert result["quoted_post"]["created_at"] == "2026-01-01T00:30:00Z"
+    assert normalize_user({"id": 2, "created": moment})["created_at"] == "2026-01-01T00:30:00Z"

@@ -1,4 +1,0 @@
-fastapi<1,>=0.116
-mcp==2.1.1
-twscrape[curl]==0.20.1
-uvicorn[standard]<1,>=0.35

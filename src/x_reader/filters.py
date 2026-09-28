@@ -42,10 +42,10 @@ def same_author(item: dict, anchor: dict) -> bool:
 
 
 def classify_timeline_item(item: dict, requested_user_id: str | int | None) -> str:
-    if is_repost(item):
-        return "repost"
     if not is_own_post(item, requested_user_id):
         return "foreign"
+    if is_repost(item):
+        return "repost"
     if is_reply(item):
         return "reply"
     return "post"

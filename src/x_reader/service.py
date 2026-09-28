@@ -42,7 +42,7 @@ def _build_search_query(
     author_part = ""
     if authors:
         author_part = "(" + " OR ".join(f"from:{a}" for a in authors) + ")"
-    text_part = f"({query})" if query else ""
+    text_part = f"({query})" if query and author_part else (query or "")
     if author_part and text_part:
         return f"{author_part} {text_part}"
     return author_part or text_part
@@ -63,35 +63,48 @@ class XReaderService:
         include_reposts: bool = True,
         limit: int = 20,
     ) -> dict[str, Any]:
-        if not query and not authors:
+        query = query.strip() if query is not None else None
+        if query and len(query) > 200:
+            raise ValueError("query must be at most 200 characters")
+        author_list = [parse_username(author) for author in (authors or [])]
+        if not query and not author_list:
             raise ValueError("Either query or authors must be provided")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+        if since is not None and (not isinstance(since, datetime) or since.tzinfo is None or since.utcoffset() is None):
+            raise ValueError("since must be a timezone-aware datetime")
+        if until is not None and (not isinstance(until, datetime) or until.tzinfo is None or until.utcoffset() is None):
+            raise ValueError("until must be a timezone-aware datetime")
+        if since and until and since > until:
+            raise ValueError("since must not be after until")
 
-        author_list = [a.lstrip("@") for a in (authors or [])]
-        fetch_limit = max(limit * 2, 40)
+        fetch_limit = overfetch_limit(limit)
 
         raw = await self.reader.search(
             _build_search_query(query, author_list),
             fetch_limit,
         )
 
+        unresolved_author_names = set()
         author_ids = set()
-        if author_list:
-            for username in author_list:
-                user = await self.reader.user(username)
-                if user:
-                    author_ids.add(str(user["id"]))
+        for username in author_list:
+            user = await self.reader.user(username)
+            if user and user.get("id") is not None:
+                author_ids.add(str(user["id"]))
+            else:
+                unresolved_author_names.add(username.lower())
 
         filtered = []
         for item in raw:
-            author_id = str((item.get("user") or {}).get("id") or "")
-            if author_ids and author_id not in author_ids:
+            author = item.get("user") or {}
+            author_id = str(author["id"]) if author.get("id") is not None else None
+            author_name = (author.get("username") or "").lower()
+            if author_list and author_id not in author_ids and author_name not in unresolved_author_names:
                 continue
             created = timestamp(item.get("date"))
-            if since and created and created < since:
+            if since and (created is None or created < since):
                 continue
-            if until and created and created > until:
+            if until and (created is None or created > until):
                 continue
             if not include_replies and item.get("inReplyToTweetId") is not None:
                 continue
@@ -119,7 +132,9 @@ class XReaderService:
         if profile is None:
             raise UserNotFound(f"X user not found: {username}")
 
-        user_id = profile["id"]
+        user_id = profile.get("id")
+        if user_id is None:
+            raise ValueError("X user profile is missing its stable ID")
         fetch_limit = overfetch_limit(limit)
 
         if include_replies:
@@ -135,17 +150,17 @@ class XReaderService:
         raw_items = _inject_pinned(raw_items, profile.get("pinnedIds") or [])
 
         kept = []
+        timeline_user = {"id": str(user_id), "username": profile.get("username") or username}
         for item in raw_items:
             kind = classify_timeline_item(item, user_id)
-            if kind == "post":
-                kept.append(item)
-            elif kind == "reply" and include_replies:
-                kept.append(item)
-            elif kind == "repost" and include_reposts:
-                kept.append(item)
-            elif kind == "foreign" and include_reposts:
-                item = {**item, "is_foreign_timeline_item": True}
-                kept.append(item)
+            if kind == "reply" and not include_replies:
+                continue
+            if kind in ("repost", "foreign") and not include_reposts:
+                continue
+            entry = {**item, "timeline_item_type": kind}
+            if kind == "foreign" or not same_author(item, {"user": profile}):
+                entry["appeared_on_timeline_of"] = timeline_user
+            kept.append(entry)
 
         kept = sort_by_created_at(kept)[:limit]
 
@@ -182,39 +197,43 @@ class XReaderService:
         if anchor is None:
             raise PostNotFound(f"X post not found: {post_id}")
 
+        result = {"post": normalize_tweet(anchor)}
         if context == "none":
-            return {"post": normalize_tweet(anchor)}
+            return result
 
         fetch_limit = overfetch_limit(limit)
 
         if context == "author_thread":
             conversation_id = anchor.get("conversationId") or anchor["id"]
             items = await self.reader.conversation(int(conversation_id), fetch_limit)
-            if anchor.get("id") not in {item.get("id") for item in items}:
+            if str(anchor.get("id")) not in {str(item.get("id")) for item in items}:
                 items = items + [anchor]
-            author = anchor.get("user") or {}
             thread = [
                 item
                 for item in items
-                if item.get("conversationId") == conversation_id
+                if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
                 and same_author(item, anchor)
             ]
             thread = sort_by_created_at(thread, descending=False)[:limit]
-            return {"posts": [normalize_tweet(item) for item in thread]}
+            result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in thread]}
+            return result
 
         if context == "replies":
             replies = await self.reader.tweet_replies(post_id, fetch_limit)
+            replies = [item for item in replies if str(item.get("inReplyToTweetId")) == str(post_id)]
             replies = sort_by_created_at(replies, descending=False)[:limit]
-            return {"posts": [normalize_tweet(item) for item in replies]}
+            result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in replies]}
+            return result
 
-        items = await self.reader.conversation(post_id, fetch_limit)
-        if anchor.get("id") not in {item.get("id") for item in items}:
-            items = items + [anchor]
         conversation_id = anchor.get("conversationId") or anchor["id"]
+        items = await self.reader.conversation(int(conversation_id), fetch_limit)
+        if str(anchor.get("id")) not in {str(item.get("id")) for item in items}:
+            items = items + [anchor]
         items = [
             item
             for item in items
-            if item.get("conversationId") == conversation_id
+            if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
         ]
         items = sort_by_created_at(items, descending=False)[:limit]
-        return {"posts": [normalize_tweet(item) for item in items]}
+        result["context"] = {"type": context, "posts": [normalize_tweet(item) for item in items]}
+        return result

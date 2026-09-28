@@ -67,7 +67,7 @@ def parse_post_locator(value: str | int) -> int:
         raise ValueError(f"Invalid X post locator: {value!r}")
 
     if isinstance(value, int):
-        if value <= 0:
+        if value <= 0 or value >= 10**20:
             raise ValueError(f"Invalid X post locator: {value}")
         return value
 
