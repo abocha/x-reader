@@ -203,6 +203,7 @@ def test_compact_tweet_preserves_discovery_context_without_heavy_payloads():
         "quoted_post": expected_preview, "reposted_post": expected_preview,
     }
     full = normalize_tweet(tweet, detail="full")
+    assert full["timeline_item_type"] == compact["timeline_item_type"] == "reply"
     assert full["quoted_post"]["media"] == preview["media"]
     assert full["reposted_post"]["links"] == [{"url": "https://example.com", "text": None}]
 
@@ -244,7 +245,7 @@ def test_minimal_tweet_keeps_sparse_context_previews_and_true_flags():
         "reply_to_id": "4", "conversation_id": "2",
         "quoted_post": {"id": "2", "text": "Original text", "author": {"username": "bob"}},
         "reposted_post": {"id": "2", "text": "Original text", "author": {"username": "bob"}},
-        "is_pinned": True, "timeline_item_type": "repost",
+        "is_pinned": True,
         "appeared_on_timeline_of": {"id": "1", "username": "alice"},
     }
     tweet["conversationId"] = 4

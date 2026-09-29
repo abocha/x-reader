@@ -367,7 +367,11 @@ async def test_user_projection_preserves_pinned_provenance_and_reader_calls():
         result = await service.read_user("alice", detail=detail, **options)
         assert reader.calls == [("user", "alice"), ("user_posts_and_replies_by_id", 1, 60)]
         assert [item["id"] for item in result["posts"]] == ["2", "3", "1"]
-        assert [item.get("timeline_item_type", "post") for item in result["posts"]] == ["foreign", "reply", "post"]
+        if detail == "minimal":
+            assert all("timeline_item_type" not in item for item in result["posts"])
+            assert result["posts"][1]["reply_to_id"] == "1"
+        else:
+            assert [item["timeline_item_type"] for item in result["posts"]] == ["foreign", "reply", "post"]
         assert [item.get("is_pinned", False) for item in result["posts"]] == [False, False, True]
         assert result["posts"][0]["appeared_on_timeline_of"] == {"id": "1", "username": "alice"}
         assert ("metrics" in result["posts"][0]) is (detail == "full")

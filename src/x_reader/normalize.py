@@ -213,8 +213,6 @@ def normalize_tweet(
             minimal["is_repost"] = True
         if result["is_pinned"]:
             minimal["is_pinned"] = True
-        if result.get("timeline_item_type") not in (None, "post"):
-            minimal["timeline_item_type"] = result["timeline_item_type"]
         if "appeared_on_timeline_of" in result:
             minimal["appeared_on_timeline_of"] = result["appeared_on_timeline_of"]
         return minimal
