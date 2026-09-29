@@ -20,6 +20,11 @@ ChatGPT web
 
 Confirmed live behavior: ChatGPT successfully called `Search X` through the plugin and received normalized post arrays.
 
+The supported production path is the Secure MCP Tunnel to `x-reader-mcp` over stdio. Production
+`x-reader` has no Caddy or public HTTP dependency. The FastAPI `/v1/...` adapter remains an
+application compatibility surface, but it is not part of the current production deployment. The
+former port-8789/Caddy ingress was retired as legacy infrastructure on 2026-09-29.
+
 ## x-reader MCP surface
 
 The MCP server exposes four read-only tools:
