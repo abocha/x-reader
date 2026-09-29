@@ -158,8 +158,8 @@ async def test_mcp_enforces_its_own_request_budget():
     )
 
     async with Client(server) as client:
-        first = await client.call_tool("get_x_post", {"tweet_id": 1})
-        second = await client.call_tool("get_x_post", {"tweet_id": 2})
+        first = await client.call_tool("get_x_post", {"tweet_id": "1"})
+        second = await client.call_tool("get_x_post", {"tweet_id": "2"})
 
     assert first.is_error is False
     assert second.is_error is True
