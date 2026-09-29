@@ -1,10 +1,9 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from x_reader.errors import PostNotFound, UserNotFound
 from x_reader.service import XReaderService
-
 
 pytestmark = pytest.mark.anyio
 
@@ -291,8 +290,8 @@ async def test_search_forms_and_client_filters(query, authors, upstream):
     ]
     result = await XReaderService(reader).search(
         query=query, authors=authors,
-        since=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        until=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        since=datetime(2026, 1, 1, tzinfo=UTC),
+        until=datetime(2026, 1, 3, tzinfo=UTC),
         include_replies=False, include_reposts=False,
     )
     assert [item["id"] for item in result["posts"]] == (["1", "4"] if authors is None else ["1"])
@@ -303,8 +302,9 @@ async def test_search_rejects_missing_terms_and_naive_boundaries():
     reader = FakeReader()
     with pytest.raises(ValueError, match="Either query or authors"):
         await XReaderService(reader).search()
+    # Naive bounds are intentionally tested because the service must reject them.
     with pytest.raises(ValueError, match="timezone-aware"):
-        await XReaderService(reader).search(query="topic", since=datetime(2026, 1, 1))
+        await XReaderService(reader).search(query="topic", since=datetime(2026, 1, 1))  # noqa: DTZ001
     assert reader.calls == []
 
 

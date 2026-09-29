@@ -8,8 +8,8 @@ from x_reader.filters import (
     classify_timeline_item,
     dedupe_by_id,
     exclude_by_id,
-    sort_by_created_at,
     same_author,
+    sort_by_created_at,
     timestamp,
 )
 from x_reader.locators import parse_post_locator, parse_username

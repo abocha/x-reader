@@ -30,9 +30,10 @@ def _reject_prefix(value: str) -> str:
     return value
 
 
+# Locator parsing uses ValueError for all invalid values to preserve its public contract.
 def parse_username(value: str) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"Invalid X user locator: {value!r}")
+        raise ValueError(f"Invalid X user locator: {value!r}")  # noqa: TRY004
 
     candidate = value.strip()
     if not candidate:
@@ -64,7 +65,7 @@ def parse_username(value: str) -> str:
 
 def parse_post_locator(value: str | int) -> int:
     if isinstance(value, bool):
-        raise ValueError(f"Invalid X post locator: {value!r}")
+        raise ValueError(f"Invalid X post locator: {value!r}")  # noqa: TRY004
 
     if isinstance(value, int):
         if value <= 0 or value >= 10**20:
@@ -72,7 +73,7 @@ def parse_post_locator(value: str | int) -> int:
         return value
 
     if not isinstance(value, str):
-        raise ValueError(f"Invalid X post locator: {value!r}")
+        raise ValueError(f"Invalid X post locator: {value!r}")  # noqa: TRY004
 
     candidate = value.strip()
     if len(candidate) >= 2 and candidate[0] in "\"'" and candidate[-1] == candidate[0]:

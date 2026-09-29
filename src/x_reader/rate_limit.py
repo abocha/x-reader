@@ -1,6 +1,6 @@
 from collections import deque
+from collections.abc import Callable
 from time import monotonic
-from typing import Callable
 
 
 class SlidingWindowRateLimiter:

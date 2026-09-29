@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 PostDetail = Literal["minimal", "compact", "full"]
@@ -22,7 +22,7 @@ def _to_iso_from_msec(value: Any) -> str | None:
         return None
 
     try:
-        moment = datetime.fromtimestamp(msec / 1000.0, tz=timezone.utc)
+        moment = datetime.fromtimestamp(msec / 1000.0, tz=UTC)
     except (OverflowError, OSError, ValueError):
         return None
 
@@ -36,13 +36,13 @@ def _str_or_none(value: Any) -> str | None:
 def _iso(value: Any) -> str | None:
     if isinstance(value, str):
         try:
-            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            value = datetime.fromisoformat(value)
         except ValueError:
             return None
     if not isinstance(value, datetime):
         return None
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc)
+        value = value.astimezone(UTC)
         return value.isoformat().replace("+00:00", "Z")
     return value.isoformat()
 

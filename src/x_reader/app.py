@@ -1,11 +1,12 @@
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Path as ApiPath, Query
+from fastapi import FastAPI, HTTPException, Query
+from fastapi import Path as ApiPath
 from fastapi.responses import JSONResponse
 
 from x_reader.errors import PostNotFound, UserNotFound
-from x_reader.reader import TwscrapeReader
 from x_reader.rate_limit import SlidingWindowRateLimiter
+from x_reader.reader import TwscrapeReader
 from x_reader.service import XReaderService
 
 

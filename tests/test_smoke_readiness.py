@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from mcp import Client
+from mcp.types import TextContent
 
 
 @pytest.fixture
@@ -51,6 +52,7 @@ def test_mcp_console_script_starts_outside_repo_cwd(tmp_path: Path):
         text=True,
     )
     try:
+        assert process.stderr is not None
         time.sleep(0.5)
         assert process.poll() is None, process.stderr.read()
     finally:
@@ -163,5 +165,6 @@ async def test_mcp_enforces_its_own_request_budget():
 
     assert first.is_error is False
     assert second.is_error is True
+    assert isinstance(second.content[0], TextContent)
     assert "rate limit" in second.content[0].text.lower()
     assert reader.calls == 1

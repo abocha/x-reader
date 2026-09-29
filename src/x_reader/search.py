@@ -27,7 +27,6 @@ def filter_search_results(
 
 import re
 
-
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
