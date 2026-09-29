@@ -1,8 +1,8 @@
 import pytest
 from mcp import Client
+from mcp.types import TextContent
 
 from x_reader.mcp_server import create_mcp_server
-
 
 pytestmark = pytest.mark.anyio
 
@@ -208,6 +208,9 @@ async def test_mcp_validation_domain_errors_and_rate_limit():
         invalid_id = await client.call_tool("get_x_post", {"tweet_id": "0"})
         invalid_limit = await client.call_tool("read_x_user", {"user": "alice", "limit": 0})
     assert all(result.is_error for result in [no_query, invalid, missing_user, missing_post, invalid_id, invalid_limit])
+    assert isinstance(no_query.content[0], TextContent)
+    assert isinstance(missing_user.content[0], TextContent)
+    assert isinstance(missing_post.content[0], TextContent)
     assert "query or authors" in no_query.content[0].text
     assert "not found" in missing_user.content[0].text
     assert "not found" in missing_post.content[0].text
@@ -228,6 +231,7 @@ async def test_mcp_request_budget_is_separate():
         second = await client.call_tool("get_x_post", {"tweet_id": "123"})
     assert first.is_error is False
     assert second.is_error is True
+    assert isinstance(second.content[0], TextContent)
     assert "rate limit" in second.content[0].text.lower()
     assert reader.calls == [("tweet", 123)]
 

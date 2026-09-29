@@ -3,7 +3,6 @@ from fastapi.testclient import TestClient
 from x_reader.app import app, create_app
 from x_reader.reader import TwscrapeReader
 
-
 POST_FIELDS = {
     "id", "url", "created_at", "text", "author", "is_reply", "is_repost",
     "is_quote", "is_pinned", "conversation_id", "reply_to_id", "metrics",

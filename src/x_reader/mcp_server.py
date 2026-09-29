@@ -13,7 +13,6 @@ from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.reader import TwscrapeReader
 from x_reader.service import XReaderService
 
-
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,

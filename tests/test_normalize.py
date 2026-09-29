@@ -1,6 +1,6 @@
 import importlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from twscrape.models import AccountAbout, Media, TextLink, Tweet, User, UserRef
@@ -284,7 +284,7 @@ def upstream_user():
         username="example",
         displayname="Example",
         rawDescription="Description",
-        created=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        created=datetime(2020, 1, 1, tzinfo=UTC),
         followersCount=10,
         friendsCount=20,
         statusesCount=30,
@@ -304,7 +304,7 @@ def upstream_tweet(upstream_user):
         id=123,
         id_str="123",
         url="https://x.com/example/status/123",
-        date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        date=datetime(2026, 1, 1, tzinfo=UTC),
         user=upstream_user,
         lang="en",
         rawContent="Example post",
@@ -345,7 +345,9 @@ def test_normalize_user_uses_blue_not_blue_verified(upstream_user, blue):
     upstream_user.blue = blue
     user = upstream_user.dict()
     user["blueVerified"] = not blue
-    assert normalize_user(user)["blue_verified"] is blue
+    result = normalize_user(user)
+    assert result is not None
+    assert result["blue_verified"] is blue
 
 
 @pytest.mark.parametrize("value", [None, {}])
@@ -356,6 +358,7 @@ def test_normalize_empty_user_and_about(value):
 
 def test_normalize_user_null_optional_fields():
     result = normalize_user({"id": None, "username": None, "blue": None})
+    assert result is not None
     assert all(value is None for value in result.values())
 
 
@@ -391,7 +394,9 @@ def test_normalize_about_upstream_nulls():
         "core": None,
         "verification_info": None,
     })
-    assert all(value is None for value in normalize_about(about.dict()).values())
+    result = normalize_about(about.dict())
+    assert result is not None
+    assert all(value is None for value in result.values())
 
 
 @pytest.mark.parametrize(
@@ -406,6 +411,7 @@ def test_normalize_about_invalid_timestamps(value):
         "username_last_changed_at": value,
         "verified_since_msec": value,
     })
+    assert result is not None
     assert result["username_last_changed_at"] is None
     assert result["verified_since"] is None
 
@@ -416,6 +422,7 @@ def test_normalize_about_timestamp_milliseconds(value):
         "username_last_changed_at": value,
         "verified_since_msec": value,
     })
+    assert result is not None
     assert result["username_last_changed_at"] == "2024-01-01T00:00:00Z"
     assert result["verified_since"] == "2024-01-01T00:00:00Z"
 
@@ -498,4 +505,6 @@ def test_normalized_timestamps_use_utc_for_aware_values():
     result = normalize_tweet(tweet)
     assert result["created_at"] == "2026-01-01T00:30:00Z"
     assert result["quoted_post"]["created_at"] == "2026-01-01T00:30:00Z"
-    assert normalize_user({"id": 2, "created": moment})["created_at"] == "2026-01-01T00:30:00Z"
+    normalized_user = normalize_user({"id": 2, "created": moment})
+    assert normalized_user is not None
+    assert normalized_user["created_at"] == "2026-01-01T00:30:00Z"

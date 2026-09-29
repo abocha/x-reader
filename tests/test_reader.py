@@ -158,7 +158,6 @@ def test_twscrape_reader_user_posts_returns_none_when_user_missing():
     class FakeApi:
         async def user_by_login(self, username: str):
             assert username == "does_not_exist"
-            return None
 
         async def user_tweets(self, uid: int, limit: int):
             raise AssertionError("user_tweets must not be called")

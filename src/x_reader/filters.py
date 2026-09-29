@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def dedupe_by_id(items: list[dict]) -> list[dict]:
@@ -35,18 +35,18 @@ def exclude_by_id(items: list[dict], post_id: str | int) -> list[dict]:
 def timestamp(value) -> datetime | None:
     if isinstance(value, str):
         try:
-            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            value = datetime.fromisoformat(value)
         except ValueError:
             return None
     if not isinstance(value, datetime):
         return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def sort_by_created_at(items: list[dict], *, descending: bool = True) -> list[dict]:
     return sorted(
         items,
-        key=lambda item: timestamp(item.get("date")) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda item: timestamp(item.get("date")) or datetime.min.replace(tzinfo=UTC),
         reverse=descending,
     )
 
