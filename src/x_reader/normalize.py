@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-PostDetail = Literal["compact", "full"]
+PostDetail = Literal["minimal", "compact", "full"]
 
 
 def _to_iso_from_msec(value: Any) -> str | None:
@@ -62,6 +62,13 @@ def _nested_tweet_preview(
         return None
 
     user = tweet.get("user") or {}
+
+    if detail == "minimal":
+        return {
+            "id": _str_or_none(tweet.get("id")),
+            "text": tweet.get("rawContent"),
+            "author": {"username": user.get("username")},
+        }
 
     result = {
         "id": _str_or_none(tweet.get("id")),
@@ -172,7 +179,7 @@ def normalize_tweet(
         "reposted_post": None,
     }
 
-    if detail == "compact":
+    if detail != "full":
         for field in ("metrics", "links", "media", "mentions", "hashtags", "possibly_sensitive", "card"):
             del result[field]
 
@@ -184,5 +191,30 @@ def normalize_tweet(
     if not nested:
         result["quoted_post"] = _nested_tweet_preview(tweet.get("quotedTweet"), detail=detail)
         result["reposted_post"] = _nested_tweet_preview(tweet.get("retweetedTweet"), detail=detail)
+
+    if detail == "minimal":
+        minimal = {
+            "id": result["id"],
+            "url": result["url"],
+            "created_at": result["created_at"],
+            "text": result["text"],
+            "author": {"username": result["author"]["username"]},
+        }
+        if result["reply_to_id"] is not None:
+            minimal["reply_to_id"] = result["reply_to_id"]
+        if result["conversation_id"] not in (None, result["id"], result["reply_to_id"]):
+            minimal["conversation_id"] = result["conversation_id"]
+        for field in ("quoted_post", "reposted_post"):
+            if result[field] is not None:
+                minimal[field] = result[field]
+        if result["is_quote"] and "quoted_post" not in minimal:
+            minimal["is_quote"] = True
+        if result["is_repost"] and "reposted_post" not in minimal:
+            minimal["is_repost"] = True
+        if result["is_pinned"]:
+            minimal["is_pinned"] = True
+        if "appeared_on_timeline_of" in result:
+            minimal["appeared_on_timeline_of"] = result["appeared_on_timeline_of"]
+        return minimal
 
     return result
