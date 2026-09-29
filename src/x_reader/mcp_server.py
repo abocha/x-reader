@@ -22,7 +22,7 @@ READ_ONLY = ToolAnnotations(
 )
 
 Limit = Annotated[int, Field(ge=1, le=50)]
-TweetId = Annotated[int, Field(gt=0)]
+TweetId = Annotated[str, Field(pattern=r"^[0-9]{1,20}$")]
 
 
 def create_mcp_server(
@@ -76,7 +76,7 @@ def create_mcp_server(
 
     @mcp.tool(
         title="Get X post",
-        description="Read one public X/Twitter post by its numeric post ID.",
+        description="Read one public X/Twitter post by its post ID as a decimal string.",
         annotations=READ_ONLY,
     )
     async def get_x_post(tweet_id: TweetId) -> dict[str, Any]:
@@ -84,7 +84,9 @@ def create_mcp_server(
 
     @mcp.tool(
         title="Get X thread",
-        description="Read the author's thread around a specific X/Twitter post.",
+        description=(
+            "Read the author's thread around a post, using its post ID as a decimal string."
+        ),
         annotations=READ_ONLY,
     )
     async def get_x_thread(tweet_id: TweetId, limit: Limit = 20) -> dict[str, Any]:
@@ -133,15 +135,15 @@ def create_mcp_server(
         description=(
             "Read a public X/Twitter post with optional direct parent, author thread, "
             "direct replies, or full conversation context. Context accepts none, parent, "
-            "author_thread, replies, or conversation. Post accepts a numeric ID or "
-            "X/Twitter post URL. Full (default) suits focused drill-down; "
+            "author_thread, replies, or conversation. Post accepts a post ID as a decimal "
+            "string or X/Twitter post URL. Full (default) suits focused drill-down; "
             "for larger context reads use minimal for discovery or compact for structure/provenance "
             "when rich metadata is unnecessary."
         ),
         annotations=READ_ONLY,
     )
     async def read_x_post(
-        post: str | int,
+        post: str,
         context: Literal[
             "none",
             "parent",

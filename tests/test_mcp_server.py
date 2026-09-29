@@ -65,11 +65,24 @@ async def test_lists_compatibility_and_rich_read_only_tools():
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
     assert set(tools) == {"search_x", "get_x_user_posts", "get_x_post", "get_x_thread", "read_x_user", "read_x_post"}
     for tool in tools.values():
+        assert tool.annotations is not None
         assert tool.annotations.read_only_hint is True
         assert tool.annotations.destructive_hint is False
-    assert "@handle" in tools["read_x_user"].description
-    assert "post URL" in tools["read_x_post"].description
-    assert "parent" in tools["read_x_post"].description
+    user_description = tools["read_x_user"].description or ""
+    post_description = tools["read_x_post"].description or ""
+    assert "@handle" in user_description
+    assert "post URL" in post_description
+    assert "decimal string" in (tools["get_x_post"].description or "")
+    assert "decimal string" in (tools["get_x_thread"].description or "")
+    assert "decimal string" in post_description
+    assert "parent" in post_description
+    for name in ("get_x_post", "get_x_thread"):
+        tweet_id_schema = tools[name].input_schema["properties"]["tweet_id"]
+        assert tweet_id_schema["type"] == "string"
+        assert tweet_id_schema["pattern"] == r"^[0-9]{1,20}$"
+    post_schema = tools["read_x_post"].input_schema["properties"]["post"]
+    assert post_schema["type"] == "string"
+    assert "anyOf" not in post_schema
     for name, default in (("search_x", "minimal"), ("read_x_user", "minimal"), ("read_x_post", "full")):
         schema = tools[name].input_schema["properties"]["detail"]
         assert schema["enum"] == ["minimal", "compact", "full"]
@@ -86,8 +99,8 @@ async def test_compatibility_tools_delegate_and_preserve_response_shapes():
     async with Client(create_mcp_server(reader)) as client:
         search = await client.call_tool("search_x", {"query": "topic", "authors": ["@alice"]})
         user = await client.call_tool("get_x_user_posts", {"username": "alice"})
-        single = await client.call_tool("get_x_post", {"tweet_id": 123})
-        thread = await client.call_tool("get_x_thread", {"tweet_id": 123})
+        single = await client.call_tool("get_x_post", {"tweet_id": "123"})
+        thread = await client.call_tool("get_x_thread", {"tweet_id": "123"})
     assert search.is_error is user.is_error is single.is_error is thread.is_error is False
     assert list(search.structured_content) == ["posts"]
     assert [item["id"] for item in search.structured_content["posts"]] == ["123"]
@@ -112,9 +125,9 @@ async def test_mcp_detail_defaults_and_explicit_projection():
         user_minimal = await client.call_tool("read_x_user", {"user": "alice"})
         user_compact = await client.call_tool("read_x_user", {"user": "alice", "detail": "compact"})
         user_full = await client.call_tool("read_x_user", {"user": "alice", "detail": "full"})
-        post_full = await client.call_tool("read_x_post", {"post": 124, "context": "parent"})
-        post_compact = await client.call_tool("read_x_post", {"post": 124, "context": "parent", "detail": "compact"})
-        post_minimal = await client.call_tool("read_x_post", {"post": 124, "context": "parent", "detail": "minimal"})
+        post_full = await client.call_tool("read_x_post", {"post": "124", "context": "parent"})
+        post_compact = await client.call_tool("read_x_post", {"post": "124", "context": "parent", "detail": "compact"})
+        post_minimal = await client.call_tool("read_x_post", {"post": "124", "context": "parent", "detail": "minimal"})
     assert all(not result.is_error for result in (
         search_minimal, search_compact, search_full,
         user_minimal, user_compact, user_full, post_full, post_compact, post_minimal,
@@ -166,7 +179,7 @@ async def test_read_x_post_supports_parent_context():
 
     async with Client(create_mcp_server(reader)) as client:
         result = await client.call_tool(
-            "read_x_post", {"post": 124, "context": "parent"}
+            "read_x_post", {"post": "124", "context": "parent"}
         )
 
     assert result.is_error is False
@@ -191,8 +204,8 @@ async def test_mcp_validation_domain_errors_and_rate_limit():
         no_query = await client.call_tool("search_x", {})
         invalid = await client.call_tool("search_x", {"query": "topic", "authors": ["bad)name"]})
         missing_user = await client.call_tool("get_x_user_posts", {"username": "missing"})
-        missing_post = await client.call_tool("get_x_post", {"tweet_id": 999})
-        invalid_id = await client.call_tool("get_x_post", {"tweet_id": 0})
+        missing_post = await client.call_tool("get_x_post", {"tweet_id": "999"})
+        invalid_id = await client.call_tool("get_x_post", {"tweet_id": "0"})
         invalid_limit = await client.call_tool("read_x_user", {"user": "alice", "limit": 0})
     assert all(result.is_error for result in [no_query, invalid, missing_user, missing_post, invalid_id, invalid_limit])
     assert "query or authors" in no_query.content[0].text
@@ -203,7 +216,7 @@ async def test_mcp_validation_domain_errors_and_rate_limit():
 
 async def test_legacy_thread_returns_empty_posts_for_missing_anchor():
     async with Client(create_mcp_server(FakeReader())) as client:
-        result = await client.call_tool("get_x_thread", {"tweet_id": 999})
+        result = await client.call_tool("get_x_thread", {"tweet_id": "999"})
     assert result.is_error is False
     assert result.structured_content == {"posts": []}
 
@@ -211,9 +224,29 @@ async def test_legacy_thread_returns_empty_posts_for_missing_anchor():
 async def test_mcp_request_budget_is_separate():
     reader = FakeReader()
     async with Client(create_mcp_server(reader, rate_limit=1)) as client:
-        first = await client.call_tool("get_x_post", {"tweet_id": 123})
-        second = await client.call_tool("get_x_post", {"tweet_id": 123})
+        first = await client.call_tool("get_x_post", {"tweet_id": "123"})
+        second = await client.call_tool("get_x_post", {"tweet_id": "123"})
     assert first.is_error is False
     assert second.is_error is True
     assert "rate limit" in second.content[0].text.lower()
     assert reader.calls == [("tweet", 123)]
+
+
+async def test_mcp_post_ids_preserve_large_strings_and_reject_numbers():
+    reader = FakeReader()
+    large_id = "2096055605538799675"
+    reader.posts[int(large_id)] = post(int(large_id))
+
+    async with Client(create_mcp_server(reader)) as client:
+        valid = await client.call_tool("get_x_post", {"tweet_id": large_id})
+        valid_read = await client.call_tool("read_x_post", {"post": large_id})
+        numeric_get = await client.call_tool("get_x_post", {"tweet_id": int(large_id)})
+        numeric_thread = await client.call_tool("get_x_thread", {"tweet_id": int(large_id)})
+        numeric_read = await client.call_tool("read_x_post", {"post": int(large_id)})
+
+    assert valid.is_error is False
+    assert valid.structured_content["post"]["id"] == large_id
+    assert valid_read.is_error is False
+    assert valid_read.structured_content["post"]["id"] == large_id
+    assert numeric_get.is_error is numeric_thread.is_error is numeric_read.is_error is True
+    assert reader.calls == [("tweet", int(large_id)), ("tweet", int(large_id))]
