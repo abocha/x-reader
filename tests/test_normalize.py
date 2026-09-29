@@ -207,6 +207,59 @@ def test_compact_tweet_preserves_discovery_context_without_heavy_payloads():
     assert full["reposted_post"]["links"] == [{"url": "https://example.com", "text": None}]
 
 
+def test_minimal_tweet_omits_default_and_null_structure():
+    tweet = {
+        "id": 5, "url": "https://x.com/alice/status/5",
+        "date": "2026-09-02T00:00:00Z", "rawContent": "A useful post",
+        "user": {"id": 1, "username": "alice", "displayname": "Alice"},
+        "conversationId": 5, "timeline_item_type": "post", "lang": "en",
+    }
+    assert normalize_tweet(tweet, detail="minimal") == {
+        "id": "5", "url": "https://x.com/alice/status/5",
+        "created_at": "2026-09-02T00:00:00Z", "text": "A useful post",
+        "author": {"username": "alice"},
+    }
+
+
+def test_minimal_tweet_keeps_sparse_context_previews_and_true_flags():
+    preview = {
+        "id": 2, "rawContent": "Original text",
+        "user": {"id": 3, "username": "bob", "displayname": "Bob"},
+        "url": "https://x.com/bob/status/2", "media": {"photos": ["large"]},
+    }
+    tweet = {
+        "id": 5, "url": "https://x.com/alice/status/5",
+        "date": "2026-09-02T00:00:00Z", "rawContent": "Response",
+        "user": {"id": 1, "username": "alice", "displayname": "Alice"},
+        "inReplyToTweetId": 4, "conversationId": 2,
+        "quotedTweet": preview, "retweetedTweet": preview,
+        "is_pinned": True, "timeline_item_type": "repost",
+        "appeared_on_timeline_of": {"id": "1", "username": "alice"},
+    }
+    minimal = normalize_tweet(tweet, detail="minimal")
+    assert minimal == {
+        "id": "5", "url": "https://x.com/alice/status/5",
+        "created_at": "2026-09-02T00:00:00Z", "text": "Response",
+        "author": {"username": "alice"},
+        "reply_to_id": "4", "conversation_id": "2",
+        "quoted_post": {"id": "2", "text": "Original text", "author": {"username": "bob"}},
+        "reposted_post": {"id": "2", "text": "Original text", "author": {"username": "bob"}},
+        "is_pinned": True, "timeline_item_type": "repost",
+        "appeared_on_timeline_of": {"id": "1", "username": "alice"},
+    }
+    tweet["conversationId"] = 4
+    assert "conversation_id" not in normalize_tweet(tweet, detail="minimal")
+
+
+def test_minimal_tweet_retains_unavailable_quote_and_repost_state():
+    tweet = {"id": 5, "isQuoteStatus": True, "retweetedTweet": {}}
+    result = normalize_tweet(tweet, detail="minimal")
+    assert result["is_quote"] is True
+    assert result["is_repost"] is True
+    assert "quoted_post" not in result
+    assert "reposted_post" not in result
+
+
 def test_normalize_tweet_tolerates_missing_optional_fields():
     normalize = importlib.import_module("x_reader.normalize")
     normalize_tweet = normalize.normalize_tweet

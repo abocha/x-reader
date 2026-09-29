@@ -344,14 +344,12 @@ async def test_search_projection_preserves_filtered_order_and_reader_calls():
         post(3, 2, date="2026-01-01T00:00:00Z"),
     ]
     service = XReaderService(reader)
-    full = await service.search(query="topic", authors=["alice"], detail="full")
-    full_calls = reader.calls[:]
-    reader.calls.clear()
-    compact = await service.search(query="topic", authors=["alice"], detail="compact")
-    assert reader.calls == full_calls == [("search", "(from:alice) (topic)", 60)]
-    assert [item["id"] for item in full["posts"]] == ["2", "1"]
-    assert [item["id"] for item in compact["posts"]] == ["2", "1"]
-    assert "metrics" in full["posts"][0] and "metrics" not in compact["posts"][0]
+    for detail in ("full", "compact", "minimal"):
+        result = await service.search(query="topic", authors=["alice"], detail=detail)
+        assert reader.calls == [("search", "(from:alice) (topic)", 60)]
+        assert [item["id"] for item in result["posts"]] == ["2", "1"]
+        assert ("metrics" in result["posts"][0]) is (detail == "full")
+        reader.calls.clear()
 
 
 async def test_user_projection_preserves_pinned_provenance_and_reader_calls():
@@ -365,17 +363,15 @@ async def test_user_projection_preserves_pinned_provenance_and_reader_calls():
     ]
     service = XReaderService(reader)
     options = {"include_replies": True, "include_reposts": True}
-    full = await service.read_user("alice", detail="full", **options)
-    full_calls = reader.calls[:]
-    reader.calls.clear()
-    compact = await service.read_user("alice", detail="compact", **options)
-    assert reader.calls == full_calls == [("user", "alice"), ("user_posts_and_replies_by_id", 1, 60)]
-    for result in (full, compact):
+    for detail in ("full", "compact", "minimal"):
+        result = await service.read_user("alice", detail=detail, **options)
+        assert reader.calls == [("user", "alice"), ("user_posts_and_replies_by_id", 1, 60)]
         assert [item["id"] for item in result["posts"]] == ["2", "3", "1"]
-        assert [item["timeline_item_type"] for item in result["posts"]] == ["foreign", "reply", "post"]
-        assert [item["is_pinned"] for item in result["posts"]] == [False, False, True]
+        assert [item.get("timeline_item_type", "post") for item in result["posts"]] == ["foreign", "reply", "post"]
+        assert [item.get("is_pinned", False) for item in result["posts"]] == [False, False, True]
         assert result["posts"][0]["appeared_on_timeline_of"] == {"id": "1", "username": "alice"}
-    assert "metrics" in full["posts"][0] and "metrics" not in compact["posts"][0]
+        assert ("metrics" in result["posts"][0]) is (detail == "full")
+        reader.calls.clear()
 
 
 @pytest.mark.parametrize("context", ["none", "parent", "author_thread", "replies", "conversation"])
@@ -385,17 +381,17 @@ async def test_post_projection_covers_anchor_context_and_reader_calls(context):
     reader.conversation_items = [post(100), post(101, reply_to=100), post(102, 2, reply_to=100)]
     reader.reply_items = [post(102, 2, reply_to=101)]
     service = XReaderService(reader)
-    full = await service.read_post(101, context=context, detail="full")
-    full_calls = reader.calls[:]
-    reader.calls.clear()
-    compact = await service.read_post(101, context=context, detail="compact")
-    assert reader.calls == full_calls
-    assert compact["post"]["id"] == full["post"]["id"] == "101"
-    if context != "none":
-        assert [item["id"] for item in compact["context"]["posts"]] == [
-            item["id"] for item in full["context"]["posts"]
-        ]
-    for item in [compact["post"], *compact.get("context", {}).get("posts", [])]:
-        assert "metrics" not in item
-    for item in [full["post"], *full.get("context", {}).get("posts", [])]:
-        assert "metrics" in item
+    expected_calls = None
+    expected_ids = None
+    for detail in ("full", "compact", "minimal"):
+        result = await service.read_post(101, context=context, detail=detail)
+        assert expected_calls is None or reader.calls == expected_calls
+        expected_calls = reader.calls[:]
+        assert result["post"]["id"] == "101"
+        if context != "none":
+            context_ids = [item["id"] for item in result["context"]["posts"]]
+            assert expected_ids is None or context_ids == expected_ids
+            expected_ids = context_ids
+        for item in [result["post"], *result.get("context", {}).get("posts", [])]:
+            assert ("metrics" in item) is (detail == "full")
+        reader.calls.clear()

@@ -70,8 +70,13 @@ async def test_lists_compatibility_and_rich_read_only_tools():
     assert "@handle" in tools["read_x_user"].description
     assert "post URL" in tools["read_x_post"].description
     assert "parent" in tools["read_x_post"].description
-    assert "compact" in (tools["search_x"].description or "")
-    assert "full" in (tools["read_x_user"].description or "")
+    for name, default in (("search_x", "minimal"), ("read_x_user", "minimal"), ("read_x_post", "full")):
+        schema = tools[name].input_schema["properties"]["detail"]
+        assert schema["enum"] == ["minimal", "compact", "full"]
+        assert schema["default"] == default
+        description = tools[name].description or ""
+        assert all(level in description.lower() for level in ("minimal", "compact", "full"))
+        assert "provenance" in description.lower()
     context_schema = tools["read_x_post"].input_schema["properties"]["context"]
     assert "parent" in context_schema["enum"]
 
@@ -91,7 +96,8 @@ async def test_compatibility_tools_delegate_and_preserve_response_shapes():
     assert single.structured_content["post"]["id"] == "123"
     assert [item["id"] for item in thread.structured_content["posts"]] == ["123", "124"]
     assert ("conversation", 123, 60) in reader.calls
-    for item in [search.structured_content["posts"][0], user.structured_content["posts"][0],
+    assert "metrics" not in search.structured_content["posts"][0]
+    for item in [user.structured_content["posts"][0],
                  single.structured_content["post"], thread.structured_content["posts"][0]]:
         assert "metrics" in item
 
@@ -100,28 +106,41 @@ async def test_mcp_detail_defaults_and_explicit_projection():
     reader = FakeReader()
     reader.posts[124] = post(124, reply_to=123)
     async with Client(create_mcp_server(reader)) as client:
-        search_full = await client.call_tool("search_x", {"query": "topic"})
+        search_minimal = await client.call_tool("search_x", {"query": "topic"})
         search_compact = await client.call_tool("search_x", {"query": "topic", "detail": "compact"})
-        user_compact = await client.call_tool("read_x_user", {"user": "alice"})
+        search_full = await client.call_tool("search_x", {"query": "topic", "detail": "full"})
+        user_minimal = await client.call_tool("read_x_user", {"user": "alice"})
+        user_compact = await client.call_tool("read_x_user", {"user": "alice", "detail": "compact"})
         user_full = await client.call_tool("read_x_user", {"user": "alice", "detail": "full"})
         post_full = await client.call_tool("read_x_post", {"post": 124, "context": "parent"})
         post_compact = await client.call_tool("read_x_post", {"post": 124, "context": "parent", "detail": "compact"})
+        post_minimal = await client.call_tool("read_x_post", {"post": 124, "context": "parent", "detail": "minimal"})
     assert all(not result.is_error for result in (
-        search_full, search_compact, user_compact, user_full, post_full, post_compact
+        search_minimal, search_compact, search_full,
+        user_minimal, user_compact, user_full, post_full, post_compact, post_minimal,
     ))
+    assert set(search_minimal.structured_content["posts"][0]) == {
+        "id", "url", "created_at", "text", "author",
+    }
     assert "metrics" in search_full.structured_content["posts"][0]
     assert "metrics" not in search_compact.structured_content["posts"][0]
+    assert "timeline_item_type" not in user_minimal.structured_content["posts"][0]
     assert "metrics" not in user_compact.structured_content["posts"][0]
     assert "metrics" in user_full.structured_content["posts"][0]
     assert "metrics" in post_full.structured_content["post"]
     assert "metrics" not in post_compact.structured_content["post"]
     assert "metrics" in post_full.structured_content["context"]["posts"][0]
     assert "metrics" not in post_compact.structured_content["context"]["posts"][0]
+    assert "metrics" not in post_minimal.structured_content["post"]
+    assert "metrics" not in post_minimal.structured_content["context"]["posts"][0]
     assert reader.calls == [
-        ("search", "topic", 60), ("search", "topic", 60),
+        ("search", "topic", 60), ("search", "topic", 60), ("search", "topic", 60),
         ("user", "alice"), ("user_posts_by_id", 1, 60),
         ("user", "alice"), ("user_posts_by_id", 1, 60),
-        ("tweet", 124), ("tweet", 123), ("tweet", 124), ("tweet", 123),
+        ("user", "alice"), ("user_posts_by_id", 1, 60),
+        ("tweet", 124), ("tweet", 123),
+        ("tweet", 124), ("tweet", 123),
+        ("tweet", 124), ("tweet", 123),
     ]
 
 

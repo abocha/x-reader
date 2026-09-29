@@ -52,7 +52,8 @@ def create_mcp_server(
             "what people are saying on X/Twitter about a topic, event, person, "
             "product, announcement, rumor, outage, or current discussion. "
             "Supply a query, authors, or both; authors accept usernames, @handles, and profile URLs. "
-            "Use detail='compact' for broad discovery or larger result sets."
+            "Minimal (default) suits broad discovery and larger result sets; "
+            "compact adds structure/provenance; full adds metrics, media, links, cards, and mentions when useful."
         ),
         annotations=READ_ONLY,
     )
@@ -60,7 +61,7 @@ def create_mcp_server(
         query: str | None = None,
         authors: list[str] | None = None,
         limit: Limit = 20,
-        detail: PostDetail = "full",
+        detail: PostDetail = "minimal",
     ) -> dict[str, Any]:
         return await call(service.search, query=query, authors=authors, limit=limit, detail=detail)
 
@@ -106,7 +107,8 @@ def create_mcp_server(
         description=(
             "Read a user's recent public posts and profile, optionally including replies, "
             "reposts, and account details. User accepts a username, @handle, or X/Twitter profile URL. "
-            "Posts default to compact; use full for metrics, media, and richer metadata."
+            "Minimal (default) suits timeline exploration; compact adds structure/provenance; "
+            "full adds metrics, media, links, cards, and mentions when useful."
         ),
         annotations=READ_ONLY,
     )
@@ -116,7 +118,7 @@ def create_mcp_server(
         include_replies: bool = False,
         include_reposts: bool = False,
         include_about: bool = False,
-        detail: PostDetail = "compact",
+        detail: PostDetail = "minimal",
     ) -> dict[str, Any]:
         return await call(
             service.read_user, user, limit=limit,
@@ -132,7 +134,9 @@ def create_mcp_server(
             "Read a public X/Twitter post with optional direct parent, author thread, "
             "direct replies, or full conversation context. Context accepts none, parent, "
             "author_thread, replies, or conversation. Post accepts a numeric ID or "
-            "X/Twitter post URL."
+            "X/Twitter post URL. Full (default) suits focused drill-down; "
+            "for larger context reads use minimal for discovery or compact for structure/provenance "
+            "when rich metadata is unnecessary."
         ),
         annotations=READ_ONLY,
     )
