@@ -5,13 +5,25 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "x-reader"
 version = "0.1.0"
+description = "Read-only X/Twitter reader with MCP and HTTP adapters for tool-using LLM clients."
+readme = "README.md"
 requires-python = ">=3.12"
+keywords = ["mcp", "twitter", "x", "fastapi", "llm-tools"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "fastapi>=0.116,<1",
   "mcp==2.1.1",
   "twscrape[curl]==0.20.1",
   "uvicorn[standard]>=0.35,<1",
 ]
+
+[project.urls]
+Repository = "https://github.com/abocha/x-reader"
+Issues = "https://github.com/abocha/x-reader/issues"
 
 [project.scripts]
 x-reader-mcp = "x_reader.mcp_server:main"
