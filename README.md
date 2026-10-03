@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/abocha/x-reader/actions/workflows/test.yml/badge.svg)](https://github.com/abocha/x-reader/actions/workflows/test.yml)
 
-A small read-only X/Twitter reader built for tool-using LLM clients.
+A small read-only X/Twitter reader built for tool-using LLM clients built on top of [twscrape](https://github.com/vladkens/twscrape)
 
 `x-reader` keeps upstream access, domain behavior, normalization, and transport adapters separate. The same service layer is exposed through MCP for agent/tool use and through a small FastAPI compatibility API. Production access is via a private Secure MCP Tunnel rather than a public HTTP ingress.
 
