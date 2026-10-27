@@ -1,7 +1,11 @@
+import json
+import logging
+
 import pytest
 from mcp import Client
 from mcp.types import TextContent
 
+from x_reader.errors import AccountUnavailable, UpstreamTimeout
 from x_reader.mcp_server import create_mcp_server
 
 pytestmark = pytest.mark.anyio
@@ -198,23 +202,24 @@ async def test_search_x_accepts_authors_without_query():
     assert ("search", "(from:alice)", 60) in reader.calls
 
 
-async def test_mcp_validation_domain_errors_and_rate_limit():
+@pytest.mark.parametrize("tool,arguments,message,expected_calls", [
+    ("search_x", {}, "query or authors", []),
+    ("search_x", {"query": "topic", "authors": ["bad)name"]}, "Invalid X username", []),
+    ("get_x_user_posts", {"username": "missing"}, "not found", [("user", "missing")]),
+    ("get_x_post", {"tweet_id": "999"}, "not found", [("tweet", 999)]),
+    ("get_x_post", {"tweet_id": "0"}, "Invalid X post", []),
+    ("read_x_user", {"user": "alice", "limit": 0}, "limit", []),
+    ("read_x_user", {"user": "alice", "limit": 51}, "limit", []),
+])
+async def test_mcp_validation_and_domain_errors(tool, arguments, message, expected_calls):
     reader = FakeReader()
-    async with Client(create_mcp_server(reader, rate_limit=5)) as client:
-        no_query = await client.call_tool("search_x", {})
-        invalid = await client.call_tool("search_x", {"query": "topic", "authors": ["bad)name"]})
-        missing_user = await client.call_tool("get_x_user_posts", {"username": "missing"})
-        missing_post = await client.call_tool("get_x_post", {"tweet_id": "999"})
-        invalid_id = await client.call_tool("get_x_post", {"tweet_id": "0"})
-        invalid_limit = await client.call_tool("read_x_user", {"user": "alice", "limit": 0})
-    assert all(result.is_error for result in [no_query, invalid, missing_user, missing_post, invalid_id, invalid_limit])
-    assert isinstance(no_query.content[0], TextContent)
-    assert isinstance(missing_user.content[0], TextContent)
-    assert isinstance(missing_post.content[0], TextContent)
-    assert "query or authors" in no_query.content[0].text
-    assert "not found" in missing_user.content[0].text
-    assert "not found" in missing_post.content[0].text
-    assert ("search", "topic", 60) not in reader.calls
+    async with Client(create_mcp_server(reader)) as client:
+        result = await client.call_tool(tool, arguments)
+
+    assert result.is_error is True
+    assert isinstance(result.content[0], TextContent)
+    assert message in result.content[0].text
+    assert reader.calls == expected_calls
 
 
 async def test_legacy_thread_returns_empty_posts_for_missing_anchor():
@@ -224,16 +229,34 @@ async def test_legacy_thread_returns_empty_posts_for_missing_anchor():
     assert result.structured_content == {"posts": []}
 
 
-async def test_mcp_request_budget_is_separate():
+@pytest.mark.parametrize("tool,arguments", [
+    ("get_x_thread", {"tweet_id": "123"}),
+    ("read_x_user", {"user": "alice"}),
+    ("search_x", {"query": "topic"}),
+])
+async def test_mcp_request_budget_is_shared_across_tools(tool, arguments):
     reader = FakeReader()
     async with Client(create_mcp_server(reader, rate_limit=1)) as client:
         first = await client.call_tool("get_x_post", {"tweet_id": "123"})
-        second = await client.call_tool("get_x_post", {"tweet_id": "123"})
+        second = await client.call_tool(tool, arguments)
     assert first.is_error is False
     assert second.is_error is True
     assert isinstance(second.content[0], TextContent)
     assert "rate limit" in second.content[0].text.lower()
     assert reader.calls == [("tweet", 123)]
+
+
+async def test_legacy_thread_uses_requested_author_and_restores_missing_anchor():
+    reader = FakeReader()
+    reader.posts[124] = post(124, reply_to=123)
+    reader.conversation_items = [post(125, 2, reply_to=123), post()]
+
+    async with Client(create_mcp_server(reader)) as client:
+        result = await client.call_tool("get_x_thread", {"tweet_id": "124"})
+
+    assert result.is_error is False
+    assert [item["id"] for item in result.structured_content["posts"]] == ["123", "124"]
+    assert reader.calls == [("tweet", 124), ("conversation", 123, 60)]
 
 
 async def test_mcp_post_ids_preserve_large_strings_and_reject_numbers():
@@ -254,3 +277,50 @@ async def test_mcp_post_ids_preserve_large_strings_and_reject_numbers():
     assert valid_read.structured_content["post"]["id"] == large_id
     assert numeric_get.is_error is numeric_thread.is_error is numeric_read.is_error is True
     assert reader.calls == [("tweet", int(large_id)), ("tweet", int(large_id))]
+
+
+@pytest.mark.parametrize("tool,arguments,count,outcome", [
+    ("search_x", {"query": "private query"}, 1, "success"),
+    ("get_x_thread", {"tweet_id": "123"}, 2, "success"),
+    ("read_x_post", {"post": "123", "context": "conversation"}, 3, "success"),
+    ("get_x_post", {"tweet_id": "999"}, 0, "not_found"),
+])
+async def test_request_diagnostics_report_counts_without_inputs(caplog, tool, arguments, count, outcome):
+    caplog.set_level(logging.INFO, logger="x_reader.mcp_server")
+    async with Client(create_mcp_server(FakeReader())) as client:
+        await client.call_tool(tool, arguments)
+    records = [json.loads(record.message) for record in caplog.records if record.name == "x_reader.mcp_server"]
+    assert len(records) == 1
+    assert set(records[0]) == {"event", "tool", "result_count", "outcome", "elapsed_ms"}
+    assert records[0]["event"] == "x_reader_request"
+    assert records[0]["tool"] == tool
+    assert records[0]["result_count"] == count
+    assert records[0]["outcome"] == outcome
+    assert records[0]["elapsed_ms"] >= 0
+    assert "private query" not in json.dumps(records)
+
+
+@pytest.mark.parametrize("error,category,message", [
+    (AccountUnavailable("No X account is available."), "account_unavailable", "No X account"),
+    (UpstreamTimeout("X request timed out."), "timeout", "timed out"),
+    (RuntimeError("private upstream details"), "internal_error", "unexpectedly"),
+])
+@pytest.mark.parametrize("tool", ["get_x_post", "get_x_thread"])
+async def test_upstream_failures_are_errors_even_for_legacy_threads(caplog, error, category, message, tool):
+    caplog.set_level(logging.INFO, logger="x_reader.mcp_server")
+
+    class FailingReader(FakeReader):
+        async def tweet(self, tweet_id):
+            raise error
+
+    async with Client(create_mcp_server(FailingReader())) as client:
+        result = await client.call_tool(tool, {"tweet_id": "123"})
+    assert result.is_error is True
+    assert isinstance(result.content[0], TextContent)
+    assert message in result.content[0].text
+    assert "private" not in result.content[0].text
+    records = [json.loads(record.message) for record in caplog.records if record.name == "x_reader.mcp_server"]
+    assert len(records) == 1
+    assert records[0]["outcome"] == category
+    assert records[0]["result_count"] == 0
+    assert "private" not in json.dumps(records)

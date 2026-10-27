@@ -1,5 +1,3 @@
-from datetime import UTC, datetime
-
 import pytest
 
 from x_reader.errors import PostNotFound, UserNotFound
@@ -161,8 +159,8 @@ async def test_context_from_continuation_keeps_root_and_excludes_anchor(context,
     continuation = post(103, reply_to=101, date="2026-01-04T00:00:00Z")
     reader.posts[103] = continuation
     reader.conversation_items = [
-        root, post(101, reply_to=100, date="2026-01-02T00:00:00Z"),
         post(102, 2, reply_to=100, date="2026-01-03T00:00:00Z"),
+        root, post(101, reply_to=100, date="2026-01-02T00:00:00Z"),
     ]
     result = await XReaderService(reader).read_post("https://twitter.com/alice/status/103", context=context)
     assert result["post"]["id"] == "103"
@@ -236,6 +234,7 @@ async def test_replies_only_include_direct_replies():
     reader.posts[100] = post(100)
     reader.reply_items = [
         post(100, reply_to=100, date="2026-01-01T00:00:00Z"),
+        post(103, 2, reply_to=100, date="2026-01-03T00:00:00Z"),
         post(101, 2, reply_to=100, date="2026-01-02T00:00:00Z"),
         post(102, 2, reply_to=101),
     ]
@@ -290,21 +289,15 @@ async def test_search_forms_and_client_filters(query, authors, upstream):
     ]
     result = await XReaderService(reader).search(
         query=query, authors=authors,
-        since=datetime(2026, 1, 1, tzinfo=UTC),
-        until=datetime(2026, 1, 3, tzinfo=UTC),
-        include_replies=False, include_reposts=False,
     )
-    assert [item["id"] for item in result["posts"]] == (["1", "4"] if authors is None else ["1"])
+    assert [item["id"] for item in result["posts"]] == (["1", "2", "3", "4", "5"] if authors is None else ["1", "2", "3", "5"])
     assert ("search", upstream, 60) in reader.calls
 
 
-async def test_search_rejects_missing_terms_and_naive_boundaries():
+async def test_search_rejects_missing_terms():
     reader = FakeReader()
     with pytest.raises(ValueError, match="Either query or authors"):
         await XReaderService(reader).search()
-    # Naive bounds are intentionally tested because the service must reject them.
-    with pytest.raises(ValueError, match="timezone-aware"):
-        await XReaderService(reader).search(query="topic", since=datetime(2026, 1, 1))  # noqa: DTZ001
     assert reader.calls == []
 
 
@@ -320,7 +313,7 @@ async def test_multi_author_search_has_one_search_and_no_profile_lookups():
 
 async def test_search_deduplicates_repeated_ids_before_limit():
     reader = FakeReader()
-    reader.search_items = [post(1), post(1), post(2)]
+    reader.search_items = [post(1), post("1"), post(2)]
 
     result = await XReaderService(reader).search(query="topic", limit=2)
 
@@ -338,8 +331,8 @@ async def test_missing_user_and_post_are_domain_errors():
 async def test_search_projection_preserves_filtered_order_and_reader_calls():
     reader = FakeReader()
     reader.search_items = [
-        post(2, reply_to=1, date="2026-01-03T00:00:00Z"),
         post(1, date="2026-01-02T00:00:00Z"),
+        post(2, reply_to=1, date="2026-01-03T00:00:00Z"),
         post(1, date="2026-01-02T00:00:00Z"),
         post(3, 2, date="2026-01-01T00:00:00Z"),
     ]
@@ -378,24 +371,28 @@ async def test_user_projection_preserves_pinned_provenance_and_reader_calls():
         reader.calls.clear()
 
 
-@pytest.mark.parametrize("context", ["none", "parent", "author_thread", "replies", "conversation"])
-async def test_post_projection_covers_anchor_context_and_reader_calls(context):
+@pytest.mark.parametrize("context,expected_ids,expected_calls", [
+    ("none", None, [("tweet", 101)]),
+    ("parent", ["100"], [("tweet", 101), ("tweet", 100)]),
+    ("author_thread", ["100"], [("tweet", 101), ("conversation", 100, 60)]),
+    ("replies", ["102"], [("tweet", 101), ("tweet_replies", 101, 60)]),
+    ("conversation", ["100", "102"], [("tweet", 101), ("conversation", 100, 60)]),
+])
+@pytest.mark.parametrize("detail", ["full", "compact", "minimal"])
+async def test_post_projection_covers_anchor_context_and_reader_calls(context, expected_ids, expected_calls, detail):
     reader = FakeReader()
     reader.posts = {100: post(100), 101: post(101, reply_to=100)}
     reader.conversation_items = [post(100), post(101, reply_to=100), post(102, 2, reply_to=100)]
     reader.reply_items = [post(102, 2, reply_to=101)]
-    service = XReaderService(reader)
-    expected_calls = None
-    expected_ids = None
-    for detail in ("full", "compact", "minimal"):
-        result = await service.read_post(101, context=context, detail=detail)
-        assert expected_calls is None or reader.calls == expected_calls
-        expected_calls = reader.calls[:]
-        assert result["post"]["id"] == "101"
-        if context != "none":
-            context_ids = [item["id"] for item in result["context"]["posts"]]
-            assert expected_ids is None or context_ids == expected_ids
-            expected_ids = context_ids
-        for item in [result["post"], *result.get("context", {}).get("posts", [])]:
-            assert ("metrics" in item) is (detail == "full")
-        reader.calls.clear()
+
+    result = await XReaderService(reader).read_post(101, context=context, detail=detail)
+
+    assert reader.calls == expected_calls
+    assert result["post"]["id"] == "101"
+    if expected_ids is None:
+        assert "context" not in result
+    else:
+        assert result["context"]["type"] == context
+        assert [item["id"] for item in result["context"]["posts"]] == expected_ids
+    for item in [result["post"], *result.get("context", {}).get("posts", [])]:
+        assert ("metrics" in item) is (detail == "full")

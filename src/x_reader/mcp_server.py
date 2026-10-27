@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import subprocess
+from functools import wraps
+from importlib.metadata import version
+from pathlib import Path
+from time import monotonic
 from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
@@ -7,11 +15,33 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from x_reader.errors import PostNotFound, UserNotFound
+from x_reader.errors import PostNotFound, XReaderError
 from x_reader.normalize import PostDetail
 from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.reader import TwscrapeReader
 from x_reader.service import XReaderService
+
+logger = logging.getLogger(__name__)
+
+
+def _server_version() -> str:
+    package_version = version("x-reader")
+    root = Path(__file__).resolve().parents[2]
+    if not (root / "pyproject.toml").is_file() or not (root / ".git").exists():
+        return package_version
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root,
+            capture_output=True, text=True, check=True, timeout=2,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root,
+            capture_output=True, text=True, check=True, timeout=2,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return package_version
+    return f"{package_version}+git.{revision}" + (".dirty" if dirty else "")
+
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
@@ -31,18 +61,49 @@ def create_mcp_server(
 ) -> MCPServer:
     service = XReaderService(reader or TwscrapeReader())
     limiter = SlidingWindowRateLimiter(limit=rate_limit, window_seconds=rate_window_seconds)
-    mcp = MCPServer("x-reader")
+    mcp = MCPServer("x-reader", version=_server_version())
 
-    def enforce_rate_limit():
-        if not limiter.allow("mcp"):
-            raise ToolError("Rate limit exceeded")
+    def request(operation):
+        @wraps(operation)
+        async def wrapped(*args, **kwargs):
+            started = monotonic()
+            outcome = "success"
+            result_count = 0
+            try:
+                if not limiter.allow("mcp"):
+                    outcome = "rate_limited"
+                    raise ToolError("Rate limit exceeded")
+                result = await operation(*args, **kwargs)
+                result_count = (
+                    len(result.get("posts", []))
+                    + int("post" in result)
+                    + len(result.get("context", {}).get("posts", []))
+                )
+                return result
+            except ValueError as exc:
+                outcome = "validation_error"
+                raise ToolError(str(exc)) from exc
+            except XReaderError as exc:
+                outcome = exc.category
+                raise ToolError(str(exc)) from exc
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+                raise
+            except ToolError:
+                raise
+            except Exception as exc:
+                outcome = "internal_error"
+                raise ToolError("X request failed unexpectedly. Check server diagnostics.") from exc
+            finally:
+                logger.info(json.dumps({
+                    "event": "x_reader_request",
+                    "tool": operation.__name__,
+                    "elapsed_ms": round((monotonic() - started) * 1000, 2),
+                    "result_count": result_count,
+                    "outcome": outcome,
+                }))
 
-    async def call(operation, *args, **kwargs):
-        enforce_rate_limit()
-        try:
-            return await operation(*args, **kwargs)
-        except (ValueError, UserNotFound, PostNotFound) as exc:
-            raise ToolError(str(exc)) from exc
+        return wrapped
 
     @mcp.tool(
         title="Search X",
@@ -56,21 +117,23 @@ def create_mcp_server(
         ),
         annotations=READ_ONLY,
     )
+    @request
     async def search_x(
         query: str | None = None,
         authors: list[str] | None = None,
         limit: Limit = 20,
         detail: PostDetail = "minimal",
     ) -> dict[str, Any]:
-        return await call(service.search, query=query, authors=authors, limit=limit, detail=detail)
+        return await service.search(query=query, authors=authors, limit=limit, detail=detail)
 
     @mcp.tool(
         title="Get X user posts",
         description="Read recent original public posts from a specific X/Twitter account.",
         annotations=READ_ONLY,
     )
+    @request
     async def get_x_user_posts(username: str, limit: Limit = 20) -> dict[str, Any]:
-        result = await call(service.read_user, username, limit=limit)
+        result = await service.read_user(username, limit=limit)
         return {"posts": result["posts"]}
 
     @mcp.tool(
@@ -78,8 +141,9 @@ def create_mcp_server(
         description="Read one public X/Twitter post by its post ID as a decimal string.",
         annotations=READ_ONLY,
     )
+    @request
     async def get_x_post(tweet_id: TweetId) -> dict[str, Any]:
-        return await call(service.read_post, tweet_id)
+        return await service.read_post(tweet_id)
 
     @mcp.tool(
         title="Get X thread",
@@ -88,8 +152,8 @@ def create_mcp_server(
         ),
         annotations=READ_ONLY,
     )
+    @request
     async def get_x_thread(tweet_id: TweetId, limit: Limit = 20) -> dict[str, Any]:
-        enforce_rate_limit()
         try:
             result = await service.read_post(
                 tweet_id,
@@ -99,8 +163,6 @@ def create_mcp_server(
             )
         except PostNotFound:
             return {"posts": []}
-        except ValueError as exc:
-            raise ToolError(str(exc)) from exc
         return {"posts": result["context"]["posts"]}
 
     @mcp.tool(
@@ -113,6 +175,7 @@ def create_mcp_server(
         ),
         annotations=READ_ONLY,
     )
+    @request
     async def read_x_user(
         user: str,
         limit: Limit = 20,
@@ -121,8 +184,8 @@ def create_mcp_server(
         include_about: bool = False,
         detail: PostDetail = "minimal",
     ) -> dict[str, Any]:
-        return await call(
-            service.read_user, user, limit=limit,
+        return await service.read_user(
+            user, limit=limit,
             include_replies=include_replies,
             include_reposts=include_reposts,
             include_about=include_about,
@@ -141,6 +204,7 @@ def create_mcp_server(
         ),
         annotations=READ_ONLY,
     )
+    @request
     async def read_x_post(
         post: str,
         context: Literal[
@@ -153,7 +217,7 @@ def create_mcp_server(
         limit: Limit = 20,
         detail: PostDetail = "full",
     ) -> dict[str, Any]:
-        return await call(service.read_post, post, context=context, limit=limit, detail=detail)
+        return await service.read_post(post, context=context, limit=limit, detail=detail)
 
     return mcp
 

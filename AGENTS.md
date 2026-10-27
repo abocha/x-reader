@@ -2,7 +2,7 @@
 
 ## Repository expectations
 
-This repository is a small read-only X/Twitter reader with shared domain logic exposed through MCP and HTTP adapters.
+This repository is a small read-only X/Twitter reader for the x-reader plugin, exposed through a stdio MCP adapter.
 
 Prefer the smallest change that satisfies the requested behavior. Preserve existing public contracts unless the task explicitly changes them.
 
@@ -14,7 +14,6 @@ Keep responsibilities separated:
 * `service.py` owns filtering, classification, ordering, deduplication, and use-case behavior.
 * `normalize.py` owns stable public representations.
 * `mcp_server.py` is an MCP adapter.
-* `app.py` is an HTTP adapter.
 
 Avoid duplicating domain behavior across adapters or adding upstream calls merely to reshape an existing result.
 
@@ -22,7 +21,7 @@ Use existing abstractions when they fit. Do not introduce new layers, helpers, o
 
 ## Compatibility
 
-Treat existing HTTP `/v1/...` behavior and legacy MCP tools as compatibility surfaces.
+Treat all six plugin MCP tools, including legacy `get_x_*` tools, as compatibility surfaces. The unused HTTP adapter has been retired; do not reintroduce it without a concrete requirement.
 
 When changing richer MCP behavior or normalized representations, verify whether existing callers should remain unchanged.
 
@@ -105,7 +104,7 @@ When reporting completed work, focus on reviewable evidence: what changed, tests
 
 Flag changes that:
 
-* move domain behavior into MCP or HTTP adapters instead of the shared service;
+* move domain behavior into the MCP adapter instead of the shared service;
 * duplicate upstream X requests when existing fetched data is sufficient;
 * change compatibility surfaces without an explicit requirement;
 * expand scope into unrelated deployment or infrastructure work;

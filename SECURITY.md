@@ -15,7 +15,7 @@ Useful reports include:
 - the affected component or file;
 - reproduction steps;
 - the security impact;
-- whether the issue requires a live X/twscrape account, HTTP exposure, or MCP/tunnel access;
+- whether the issue requires a live X/twscrape account or MCP/tunnel access;
 - any suggested mitigation, if known.
 
 ## Security boundaries
@@ -24,7 +24,7 @@ Useful reports include:
 
 - `accounts.db` may contain X/twscrape authentication state. It must remain outside version control and should be readable only by the service account that needs it.
 - Secure MCP Tunnel runtime keys belong in environment variables or protected service environment files, not source code, shell history, logs, screenshots, or issue bodies.
-- The FastAPI adapter is a compatibility/development surface. The supported production deployment does not expose it as a public ingress.
+- The supported deployment uses stdio MCP through a private Secure MCP Tunnel; there is no HTTP adapter.
 - In-process rate limiting is a safety control, not an authentication mechanism.
 - The project does not intentionally bypass X access controls and should only be used with accounts and content the operator is authorized to access.
 

@@ -1,10 +1,22 @@
 class XReaderError(Exception):
-    pass
+    category = "reader_error"
 
 
 class UserNotFound(XReaderError):
-    pass
+    category = "not_found"
 
 
 class PostNotFound(XReaderError):
-    pass
+    category = "not_found"
+
+
+class AccountUnavailable(XReaderError):
+    category = "account_unavailable"
+
+
+class UpstreamTimeout(XReaderError):
+    category = "timeout"
+
+
+class UpstreamUnavailable(XReaderError):
+    category = "upstream_unavailable"

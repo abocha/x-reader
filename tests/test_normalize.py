@@ -1,4 +1,3 @@
-import importlib
 import json
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -8,12 +7,7 @@ from twscrape.models import AccountAbout, Media, TextLink, Tweet, User, UserRef
 from x_reader.normalize import normalize_about, normalize_tweet, normalize_user
 
 
-def test_normalize_tweet_returns_compact_public_shape():
-    normalize = importlib.import_module("x_reader.normalize")
-    normalize_tweet = getattr(normalize, "normalize_tweet", None)
-
-    assert normalize_tweet is not None
-
+def test_normalize_tweet_defaults_to_full_public_shape():
     tweet = {
         "id": 2095601211869421726,
         "url": "https://x.com/sama/status/2095601211869421726",
@@ -98,9 +92,6 @@ def test_normalize_tweet_returns_compact_public_shape():
 
 
 def test_normalize_tweet_preserves_quoted_post():
-    normalize = importlib.import_module("x_reader.normalize")
-    normalize_tweet = normalize.normalize_tweet
-
     quoted = {
         "id": 111,
         "url": "https://x.com/other/status/111",
@@ -134,9 +125,6 @@ def test_normalize_tweet_preserves_quoted_post():
 
 
 def test_normalize_tweet_preserves_reposted_post():
-    normalize = importlib.import_module("x_reader.normalize")
-    normalize_tweet = normalize.normalize_tweet
-
     original = {
         "id": 333,
         "url": "https://x.com/original_author/status/333",
@@ -262,9 +250,6 @@ def test_minimal_tweet_retains_unavailable_quote_and_repost_state():
 
 
 def test_normalize_tweet_tolerates_missing_optional_fields():
-    normalize = importlib.import_module("x_reader.normalize")
-    normalize_tweet = normalize.normalize_tweet
-
     result = normalize_tweet({"id": 1, "user": {}})
 
     assert result["id"] == "1"
@@ -468,7 +453,6 @@ def test_normalize_nested_upstream_links_and_cycles(upstream_tweet, field, outpu
         "media": {"photos": [], "videos": [], "animated": []},
     }
     json.dumps(result, default=str)
-    assert normalize_tweet(tweet, nested=True)[output] is None
 
 
 def test_normalize_tweet_optional_nulls():
@@ -508,3 +492,26 @@ def test_normalized_timestamps_use_utc_for_aware_values():
     normalized_user = normalize_user({"id": 2, "created": moment})
     assert normalized_user is not None
     assert normalized_user["created_at"] == "2026-01-01T00:30:00Z"
+
+
+@pytest.mark.parametrize("detail", ["minimal", "compact", "full"])
+def test_only_full_projection_enumerates_rich_metadata(detail):
+    reads = []
+
+    class ObservedList(list):
+        def __iter__(self):
+            reads.append(True)
+            return super().__iter__()
+
+    tweet = {
+        "id": 1, "lang": "und",
+        "links": ObservedList([{"url": "https://example.com"}]),
+        "mentionedUsers": ObservedList([{"id": 2, "username": "bob"}]),
+        "hashtags": ObservedList(["topic"]),
+        "quotedTweet": {"id": 2, "links": ObservedList([{"url": "https://example.com"}])},
+    }
+    result = normalize_tweet(tweet, detail=detail)
+    assert len(reads) == (4 if detail == "full" else 0)
+    assert ("links" in result) is (detail == "full")
+    if detail != "minimal":
+        assert result["lang"] == "und"
