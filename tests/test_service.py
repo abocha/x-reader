@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from x_reader.errors import PostNotFound, UserNotFound
@@ -45,8 +47,8 @@ class FakeReader:
         self.calls.append(("user_posts_and_replies_by_id", user_id, limit))
         return self.timeline
 
-    async def search(self, query, limit):
-        self.calls.append(("search", query, limit))
+    async def search(self, query, limit, *, ranking="recent"):
+        self.calls.append(("search", query, limit) if ranking == "recent" else ("search", query, limit, ranking))
         return self.search_items
 
     async def tweet(self, tweet_id):
@@ -396,3 +398,123 @@ async def test_post_projection_covers_anchor_context_and_reader_calls(context, e
         assert [item["id"] for item in result["context"]["posts"]] == expected_ids
     for item in [result["post"], *result.get("context", {}).get("posts", [])]:
         assert ("metrics" in item) is (detail == "full")
+
+
+async def test_research_search_receipt_accounts_for_filters_duplicates_and_truncation():
+    reader = FakeReader()
+    reader.search_items = [
+        post(8, date="2025-12-31T00:00:00Z"),
+        post(7, 2),
+        post(6, reply_to=1),
+        post(5, repost=post(50)),
+        post(4),
+        post(3, date="2026-01-03T00:00:00Z"),
+        post(2, date="2026-01-02T03:00:00Z"),
+        post("2", date="2026-01-02T03:00:00Z"),
+        post(1, date="2026-01-02T04:00:00Z"),
+    ]
+    for item in reader.search_items:
+        item["rawContent"] = "Tested TERRA in practice"
+    reader.search_items[4]["rawContent"] = "Announcement"
+    reader.search_items[4]["quotedTweet"] = {"rawContent": "Tested TERRA in practice"}
+    result = await XReaderService(reader).search(
+        query="Terra", authors=["alice"], limit=1, detail="minimal",
+        since=datetime(2026, 1, 1, tzinfo=UTC), until=datetime(2026, 1, 3, tzinfo=UTC),
+        include_replies=False, include_reposts=False, required_terms=["tested terra"],
+        include_metrics=True, include_sampling=True,
+    )
+    assert [item["id"] for item in result["posts"]] == ["1"]
+    assert "metrics" in result["posts"][0]
+    assert "media" not in result["posts"][0]
+    receipt = result["sampling"]
+    assert receipt["query_sent"] == "(from:alice) (Terra)"
+    assert receipt["fetched_count"] == 9
+    assert receipt["excluded_count"] == 6
+    assert receipt["duplicate_count"] == 1
+    assert receipt["eligible_count"] == 2
+    assert receipt["returned_count"] == 1
+    assert receipt["omitted_by_limit"] == 1
+    assert receipt["has_more"] is None
+    assert receipt["total_matching"] is None
+    assert receipt["exclusions"] == [
+        {"id": "8", "reason": "since"}, {"id": "7", "reason": "author"},
+        {"id": "6", "reason": "reply"}, {"id": "5", "reason": "repost"},
+        {"id": "4", "reason": "required_terms"}, {"id": "3", "reason": "until"},
+    ]
+    assert datetime.fromisoformat(receipt["retrieved_at"]).tzinfo is not None
+    assert reader.calls == [("search", "(from:alice) (Terra)", 40)]
+
+
+async def test_top_sample_retains_upstream_order_after_filtering_and_deduplication():
+    reader = FakeReader()
+    reader.search_items = [post(1, date="2020-01-01T00:00:00Z"), post("1"), post(2)]
+    result = await XReaderService(reader).search(query="topic", ranking="top", include_sampling=True)
+    assert [item["id"] for item in result["posts"]] == ["1", "2"]
+    assert result["sampling"]["upstream_product"] == "Top"
+    assert result["sampling"]["returned_order"] == "upstream_order"
+    assert reader.calls == [("search", "topic", 60, "top")]
+
+
+@pytest.mark.parametrize("options", [
+    {"ranking": "semantic"},
+    {"required_terms": [""]},
+    {"required_terms": ["x"] * 11},
+    {"since": "2026-01-01"},
+    {"until": datetime(2026, 1, 1)},
+    {"since": datetime(2026, 1, 2, tzinfo=UTC), "until": datetime(2026, 1, 1, tzinfo=UTC)},
+])
+async def test_research_filters_reject_invalid_inputs_before_fetching(options):
+    reader = FakeReader()
+    with pytest.raises(ValueError):
+        await XReaderService(reader).search(query="topic", **options)
+    assert reader.calls == []
+
+
+async def test_empty_sample_does_not_claim_no_matching_discussion():
+    reader = FakeReader()
+    result = await XReaderService(reader).search(query="topic", include_sampling=True)
+    assert result["posts"] == []
+    assert result["sampling"]["fetched_count"] == 0
+    assert result["sampling"]["has_more"] is None
+    assert result["sampling"]["total_matching"] is None
+    assert reader.calls == [("search", "topic", 60)]
+
+
+@pytest.mark.parametrize("context,expected_ids,counters", [
+    ("none", None, [0, 0, 0, 0, 0, 0, 0]),
+    ("parent", ["100"], [1, 0, 0, 0, 0, 1, 0]),
+    ("replies", ["102"], [4, 0, 1, 1, 1, 1, 0]),
+    ("author_thread", ["100"], [4, 1, 2, 1, 1, 1, 0]),
+    ("conversation", ["100"], [4, 1, 1, 1, 1, 2, 1]),
+])
+async def test_post_sampling_explains_context_selection_without_extra_fetches(context, expected_ids, counters):
+    reader = FakeReader()
+    reader.posts = {
+        100: post(100, date="2026-01-01T00:00:00Z"), 101: post(101, reply_to=100),
+    }
+    reader.reply_items = [post(101, reply_to=101), post(102, reply_to=101), post("102", reply_to=101), post(103, reply_to=102)]
+    reader.conversation_items = [reader.posts[100], post(102, 2), reader.posts[100], post(200, conversation=200)]
+    service = XReaderService(reader)
+    result = await service.read_post(101, context=context, limit=1, detail="minimal", include_metrics=True, include_sampling=True)
+    receipt = result["sampling"]
+    assert result["post"]["id"] == "101"
+    assert "metrics" in result["post"]
+    assert receipt["context"] == context
+    assert [receipt[name] for name in (
+        "fetched_count", "anchor_injected_count", "filtered_out_count", "duplicate_count",
+        "anchor_excluded_count", "eligible_count", "omitted_by_limit",
+    )] == counters
+    assert receipt["returned_count"] == (len(expected_ids) if expected_ids is not None else 0)
+    assert receipt["has_more"] is None
+    assert receipt["total_matching"] is None
+    assert datetime.fromisoformat(receipt["anchor_retrieved_at"]) <= datetime.fromisoformat(receipt["retrieved_at"])
+    if expected_ids is None:
+        assert "context" not in result
+    else:
+        assert [item["id"] for item in result["context"]["posts"]] == expected_ids
+    calls = reader.calls[:]
+    reader.calls.clear()
+    default = await service.read_post(101, context=context, limit=1, detail="minimal", include_metrics=True)
+    assert "sampling" not in default
+    assert reader.calls == calls
+    assert {key: value for key, value in result.items() if key != "sampling"} == default

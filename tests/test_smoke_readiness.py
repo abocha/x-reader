@@ -34,12 +34,16 @@ async def test_mcp_console_script_serves_tools_outside_repo_cwd(tmp_path: Path, 
             initialized = await client.initialize()
             tools = (await client.list_tools()).tools
             invalid = await client.call_tool("search_x", {})
+            unavailable = await client.call_tool("search_x", {"query": "topic"})
 
     assert {tool.name for tool in tools} == {
         "search_x", "get_x_user_posts", "get_x_post", "get_x_thread",
         "read_x_user", "read_x_post",
     }
     assert invalid.is_error is True
+    assert unavailable.is_error is True
+    assert unavailable.structured_content["error"]["code"] == "ACCOUNT_UNAVAILABLE"
+    assert unavailable.structured_content["error"]["retryable"] is False
     assert initialized.server_info.version.startswith(version("x-reader") + "+git.")
     captured = capfd.readouterr()
     assert captured.out == ""
@@ -47,9 +51,10 @@ async def test_mcp_console_script_serves_tools_outside_repo_cwd(tmp_path: Path, 
         json.loads(line) for line in stderr_path.read_text().splitlines()
         if '"event": "x_reader_request"' in line
     ]
-    assert len(diagnostics) == 1
+    assert len(diagnostics) == 2
     assert diagnostics[0]["tool"] == "search_x"
     assert diagnostics[0]["outcome"] == "validation_error"
+    assert diagnostics[1]["outcome"] == "account_unavailable"
 
 
 def test_reader_uses_configured_absolute_db_path(monkeypatch, tmp_path: Path):

@@ -17,7 +17,7 @@ class VerificationError(Exception):
 
 
 async def verify_deployment(
-    client: Client, expected_commit: str, post_id: str
+    client: Client, expected_commit: str, post_id: str, research_query: str | None = None
 ) -> dict[str, Any]:
     info = client.server_info
     if info is None or info.name != "x-reader":
@@ -53,25 +53,70 @@ async def verify_deployment(
     post = (response.structured_content or {}).get("post")
     if not isinstance(post, dict) or post.get("id") != post_id:
         raise VerificationError("The returned post ID did not match the exact input string.")
-    return {
+    for preview in (post, post.get("quoted_post") or {}, post.get("reposted_post") or {}):
+        links = preview.get("links", [])
+        if any(link in links[:index] for index, link in enumerate(links)):
+            raise VerificationError("The post contains duplicate normalized links.")
+    report = {
         "status": "ok", "server_version": info.version,
         "commit": expected_commit, "tools": sorted(tools), "verified_post_id": post_id,
     }
+    if research_query is not None:
+        research = {}
+        for ranking, product in (("recent", "Latest"), ("top", "Top")):
+            sample = await client.call_tool("search_x", {
+                "query": research_query, "limit": 3, "ranking": ranking,
+                "detail": "minimal", "include_metrics": True, "include_sampling": True,
+            })
+            if sample.is_error:
+                error = (sample.structured_content or {}).get("error", {})
+                code = error.get("code", "UNKNOWN_EXECUTION_ERROR")
+                raise VerificationError(f"Research search failed ({code}); stop retries and inspect diagnostics.")
+            data = sample.structured_content or {}
+            receipt = data.get("sampling", {})
+            posts = data.get("posts", [])
+            if (
+                receipt.get("upstream_product") != product or not receipt.get("retrieved_at")
+                or receipt.get("returned_count") != len(posts)
+                or "has_more" not in receipt or receipt["has_more"] is not None
+                or any("metrics" not in item or "media" in item for item in posts)
+            ):
+                raise VerificationError("Research search controls or receipt did not match the contract.")
+            research[ranking] = {"returned_count": len(posts), "retrieved_at": receipt["retrieved_at"]}
+        context = await client.call_tool("read_x_post", {
+            "post": post_id, "context": "replies", "limit": 3, "detail": "minimal",
+            "include_metrics": True, "include_sampling": True,
+        })
+        data = context.structured_content or {}
+        receipt = data.get("sampling", {})
+        if (
+            context.is_error or receipt.get("context") != "replies"
+            or not receipt.get("anchor_retrieved_at") or not receipt.get("retrieved_at")
+            or "has_more" not in receipt or receipt["has_more"] is not None
+            or "metrics" not in data.get("post", {})
+        ):
+            raise VerificationError("Research context controls or receipt did not match the contract.")
+        research["replies"] = {
+            "returned_count": receipt["returned_count"], "retrieved_at": receipt["retrieved_at"],
+        }
+        report["research"] = research
+    return report
 
 
-async def _run(command: list[str], expected_commit: str, post_id: str) -> dict[str, Any]:
-    async with asyncio.timeout(90):
+async def _run(command: list[str], expected_commit: str, post_id: str, research_query: str | None) -> dict[str, Any]:
+    async with asyncio.timeout(180 if research_query is not None else 90):
         async with Client(
             StdioServerParameters(command=command[0], args=command[1:], env=os.environ.copy()),
             read_timeout_seconds=65,
         ) as client:
-            return await verify_deployment(client, expected_commit, post_id)
+            return await verify_deployment(client, expected_commit, post_id, research_query)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-commit", required=True, help="Expected full Git commit SHA")
     parser.add_argument("--post-id", required=True, help="Existing public post ID above 2^53-1")
+    parser.add_argument("--research-query", help="Also verify Recent/Top sampling and one reply-context read (three extra calls)")
     parser.add_argument(
         "--command", nargs=argparse.REMAINDER,
         default=[sys.executable, "-m", "x_reader.mcp_server"],
@@ -84,8 +129,10 @@ def main() -> None:
         parser.error("--post-id must be a decimal string above 2^53-1, at most 20 digits")
     if not args.command:
         parser.error("--command requires an executable")
+    if args.research_query is not None and not args.research_query.strip():
+        parser.error("--research-query must not be empty")
     try:
-        report = asyncio.run(_run(args.command, args.expected_commit, args.post_id))
+        report = asyncio.run(_run(args.command, args.expected_commit, args.post_id, args.research_query))
     except VerificationError as exc:
         parser.exit(1, f"Verification failed: {exc}\n")
     except Exception as exc:  # noqa: BLE001 -- sanitize arbitrary transport failures at the CLI boundary

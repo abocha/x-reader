@@ -5,7 +5,7 @@ import pytest
 from mcp import Client
 from mcp.types import TextContent
 
-from x_reader.errors import AccountUnavailable, UpstreamTimeout
+from x_reader.errors import AccountUnavailable, EndpointBusy, UpstreamTimeout
 from x_reader.mcp_server import create_mcp_server
 
 pytestmark = pytest.mark.anyio
@@ -48,8 +48,8 @@ class FakeReader:
     async def user_about(self, username):
         return {"account_based_in": "US"}
 
-    async def search(self, query, limit):
-        self.calls.append(("search", query, limit))
+    async def search(self, query, limit, *, ranking="recent"):
+        self.calls.append(("search", query, limit) if ranking == "recent" else ("search", query, limit, ranking))
         return self.search_items
 
     async def tweet(self, tweet_id):
@@ -324,3 +324,51 @@ async def test_upstream_failures_are_errors_even_for_legacy_threads(caplog, erro
     assert records[0]["outcome"] == category
     assert records[0]["result_count"] == 0
     assert "private" not in json.dumps(records)
+
+
+async def test_endpoint_exhaustion_is_a_machine_readable_execution_error():
+    class BusyReader(FakeReader):
+        async def search(self, query, limit, *, ranking="recent"):
+            raise EndpointBusy(
+                "X accounts are temporarily locked for this endpoint.",
+                retry_after_seconds=120, endpoint="SearchTimeline",
+            )
+
+    async with Client(create_mcp_server(BusyReader())) as client:
+        result = await client.call_tool("search_x", {"query": "topic"})
+    assert result.is_error is True
+    assert result.structured_content == {"error": {
+        "code": "ENDPOINT_BUSY", "category": "endpoint_busy",
+        "message": "X accounts are temporarily locked for this endpoint.",
+        "retryable": True, "retry_after_seconds": 120, "endpoint": "SearchTimeline",
+    }}
+    assert isinstance(result.content[0], TextContent)
+    assert json.loads(result.content[0].text) == result.structured_content
+
+
+async def test_mcp_research_controls_and_lightweight_context_metrics():
+    reader = FakeReader()
+    reader.search_items = [post(123), post(124)]
+    reader.search_items[1]["rawContent"] = "firsthand TEST"
+    reader.search_items[1]["likeCount"] = 5
+    async with Client(create_mcp_server(reader)) as client:
+        sample = await client.call_tool("search_x", {
+            "query": "topic", "ranking": "top", "required_terms": ["test"],
+            "since": "2026-09-01T00:00:00Z", "until": "2026-09-04T00:00:00Z",
+            "include_sampling": True, "include_metrics": True,
+        })
+        context = await client.call_tool("read_x_post", {
+            "post": "123", "context": "replies", "detail": "minimal", "include_metrics": True,
+            "include_sampling": True,
+        })
+        user = await client.call_tool("read_x_user", {"user": "alice", "include_metrics": True})
+    assert not sample.is_error and not context.is_error and not user.is_error
+    assert [item["id"] for item in sample.structured_content["posts"]] == ["124"]
+    assert sample.structured_content["posts"][0]["metrics"]["likes"] == 5
+    assert "media" not in sample.structured_content["posts"][0]
+    assert sample.structured_content["sampling"]["exclusions"] == [{"id": "123", "reason": "required_terms"}]
+    assert "metrics" in context.structured_content["post"]
+    assert "metrics" in context.structured_content["context"]["posts"][0]
+    assert context.structured_content["sampling"]["context"] == "replies"
+    assert context.structured_content["sampling"]["has_more"] is None
+    assert "metrics" in user.structured_content["posts"][0]
