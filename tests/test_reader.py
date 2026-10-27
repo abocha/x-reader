@@ -1,11 +1,18 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from twscrape.accounts_pool import NoAccountError
 from twscrape.http import NetworkError
 from twscrape.queue_client import GqlFeaturesOutdatedError
 
-from x_reader.errors import AccountUnavailable, UpstreamTimeout, UpstreamUnavailable
+from x_reader.errors import (
+    AccountUnavailable,
+    EndpointBusy,
+    UpstreamTimeout,
+    UpstreamUnavailable,
+)
 from x_reader.reader import TwscrapeReader
 
 
@@ -267,3 +274,59 @@ def test_cancelling_a_stream_releases_it_and_preserves_cancellation():
         assert closed.is_set()
 
     asyncio.run(run())
+
+
+def test_top_search_passes_product_to_upstream_without_another_request():
+    calls = []
+
+    class FakeApi:
+        async def search(self, query, limit, kv):
+            calls.append((query, limit, kv))
+            yield SimpleNamespace(dict=lambda: {"id": 1})
+
+    result = asyncio.run(TwscrapeReader(api=FakeApi()).search("topic", 10, ranking="top"))
+    assert result == [{"id": 1}]
+    assert calls == [("topic", 10, {"product": "Top"})]
+
+
+def test_search_queue_exhaustion_has_safe_retry_metadata():
+    class Pool:
+        async def get_all(self):
+            return [SimpleNamespace(
+                active=True, username="private-account", cookies={"private": "secret"},
+                locks={"SearchTimeline": datetime.now(UTC) + timedelta(minutes=3)},
+            )]
+
+    class FakeApi:
+        pool = Pool()
+
+        async def search(self, query, limit):
+            raise NoAccountError("private upstream details")
+            yield
+
+    with pytest.raises(EndpointBusy) as caught:
+        asyncio.run(TwscrapeReader(api=FakeApi()).search("topic", 1))
+    assert caught.value.retryable is True
+    assert caught.value.endpoint == "SearchTimeline"
+    assert caught.value.retry_after_seconds is not None
+    assert 179 <= caught.value.retry_after_seconds <= 180
+    assert "private" not in str(caught.value)
+
+
+def test_inactive_accounts_do_not_claim_retry_will_help():
+    class Pool:
+        async def get_all(self):
+            return [SimpleNamespace(active=False)]
+
+    class FakeApi:
+        pool = Pool()
+
+        async def search(self, query, limit):
+            raise NoAccountError("private auth state")
+            yield
+
+    with pytest.raises(AccountUnavailable) as caught:
+        asyncio.run(TwscrapeReader(api=FakeApi()).search("topic", 1))
+    assert caught.value.code == "ACCOUNT_UNAVAILABLE"
+    assert caught.value.retryable is False
+    assert caught.value.retry_after_seconds is None

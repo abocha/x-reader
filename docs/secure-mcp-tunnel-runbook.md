@@ -106,6 +106,11 @@ uv run x-reader-verify --expected-commit "$EXPECTED_COMMIT" --post-id "$POST_ID"
 ```
 
 The checker starts a fresh process; it does not inspect or restart the active tunnel daemon.
+Add `--research-query 'YOUR PUBLIC TOPIC'` before `--command` to run three extra bounded
+acceptance calls: Recent search, Top search, and one reply-context read. These verify
+lightweight metrics and opt-in sampling receipts. A search execution failure stops the
+check with its machine-readable code; the checker does not retry through account locks.
+The base post check also rejects duplicate normalized links in the post and its previews.
 After an authorized deployment/restart, refresh the installed plugin's tool discovery and
 check that `get_x_post.tweet_id`, `get_x_thread.tweet_id`, and `read_x_post.post` are strings.
 Read the same large-ID post through the plugin and confirm the returned string matches.
@@ -120,11 +125,17 @@ Each upstream read waits at most five seconds for an available account and has a
 tool call can make several such reads. Unavailable accounts and timed-out reads return
 explicit tool errors; they do not masquerade as empty results or missing posts.
 
+On account acquisition failure, a bounded read-only account-pool snapshot distinguishes
+temporary endpoint locks from an inactive/empty pool. See [discussion research](discussion-research.md#execution-failures)
+for the structured execution-error format and retry semantics. An endpoint lock is not
+evidence of expired credentials. Do not reset locks to make a failed diagnostic pass.
+
 Each executed tool emits one JSON diagnostic line to stderr with `event`, `tool`,
 `elapsed_ms`, `result_count`, and `outcome`. Result counts include the anchor and context
 posts returned by the tool. Outcomes distinguish success, not-found, validation errors,
 rate limiting, account unavailability, timeout, upstream unavailability, cancellation, and
 unexpected failures. SDK schema validation happens before tool execution.
+`endpoint_busy` identifies queue exhaustion when a lock snapshot establishes it.
 
 These diagnostic lines contain no queries, handles, post content, credentials, or raw
 exception messages. They share stderr with existing SDK/twscrape logs; stdout remains

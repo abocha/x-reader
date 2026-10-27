@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from x_reader.errors import PostNotFound, UserNotFound
@@ -9,6 +10,7 @@ from x_reader.filters import (
     exclude_by_id,
     same_author,
     sort_by_created_at,
+    timestamp,
 )
 from x_reader.locators import parse_post_locator, parse_username
 from x_reader.normalize import (
@@ -49,15 +51,6 @@ def _build_search_query(
     return author_part or text_part
 
 
-def _prepare_context_items(
-    items: list[dict[str, Any]], anchor_id: int, *, include_anchor: bool
-) -> list[dict[str, Any]]:
-    items = dedupe_by_id(items)
-    if not include_anchor:
-        items = exclude_by_id(items, anchor_id)
-    return items
-
-
 class XReaderService:
     def __init__(self, reader: Any) -> None:
         self.reader = reader
@@ -69,6 +62,14 @@ class XReaderService:
         authors: list[str] | None = None,
         limit: int = 20,
         detail: PostDetail = "full",
+        ranking: Literal["recent", "top"] = "recent",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_replies: bool = True,
+        include_reposts: bool = True,
+        required_terms: list[str] | None = None,
+        include_metrics: bool = False,
+        include_sampling: bool = False,
     ) -> dict[str, Any]:
         query = query.strip() if query is not None else None
         if query and len(query) > 200:
@@ -78,25 +79,82 @@ class XReaderService:
             raise ValueError("Either query or authors must be provided")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+        if ranking not in ("recent", "top"):
+            raise ValueError("ranking must be recent or top")
+        for name, bound in (("since", since), ("until", until)):
+            if bound is not None and (not isinstance(bound, datetime) or bound.tzinfo is None or bound.utcoffset() is None):
+                raise ValueError(f"{name} must be a timezone-aware datetime")
+        if since and until and since >= until:
+            raise ValueError("since must be before until")
+        if required_terms is not None and (
+            len(required_terms) > 10
+            or any(not isinstance(term, str) or not term.strip() or len(term) > 200 for term in required_terms)
+        ):
+            raise ValueError("required_terms must contain at most 10 nonempty phrases of at most 200 characters")
+        terms = [term.strip().casefold() for term in (required_terms or [])]
         fetch_limit = overfetch_limit(limit)
-
-        raw = await self.reader.search(
-            _build_search_query(query, author_list),
-            fetch_limit,
-        )
-
+        upstream_query = _build_search_query(query, author_list)
+        if ranking == "recent":
+            raw = await self.reader.search(upstream_query, fetch_limit)
+        else:
+            raw = await self.reader.search(upstream_query, fetch_limit, ranking=ranking)
+        retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         allowed_author_names = {username.lower() for username in author_list}
-
         filtered = []
+        exclusions = []
         for item in raw:
-            author = item.get("user") or {}
-            author_name = (author.get("username") or "").lower()
+            reason = None
+            author_name = ((item.get("user") or {}).get("username") or "").lower()
+            created = timestamp(item.get("date"))
             if author_list and author_name not in allowed_author_names:
-                continue
-            filtered.append(item)
-
-        filtered = sort_by_created_at(dedupe_by_id(filtered))[:limit]
-        return {"posts": [normalize_tweet(item, detail=detail) for item in filtered]}
+                reason = "author"
+            elif since and (created is None or created < since):
+                reason = "since"
+            elif until and (created is None or created >= until):
+                reason = "until"
+            elif not include_replies and item.get("inReplyToTweetId") is not None:
+                reason = "reply"
+            elif not include_reposts and item.get("retweetedTweet") is not None:
+                reason = "repost"
+            elif terms and not all(term in (item.get("rawContent") or "").casefold() for term in terms):
+                reason = "required_terms"
+            if reason is None:
+                filtered.append(item)
+            elif include_sampling:
+                exclusions.append({"id": str(item["id"]) if item.get("id") is not None else None, "reason": reason})
+        unique = dedupe_by_id(filtered)
+        if ranking == "recent":
+            unique = sort_by_created_at(unique)
+        selected = unique[:limit]
+        result: dict[str, Any] = {
+            "posts": [normalize_tweet(item, detail=detail, include_metrics=include_metrics) for item in selected],
+        }
+        if include_sampling:
+            result["sampling"] = {
+                "retrieved_at": retrieved_at,
+                "query_sent": upstream_query,
+                "upstream_product": "Latest" if ranking == "recent" else "Top",
+                "returned_order": "created_at_desc" if ranking == "recent" else "upstream_order",
+                "criteria": {
+                    "authors": author_list, "since": since.isoformat() if since else None,
+                    "until_exclusive": until.isoformat() if until else None,
+                    "include_replies": include_replies, "include_reposts": include_reposts,
+                    "required_terms": terms, "required_terms_match": "casefold_substrings_in_post_text",
+                },
+                "requested_limit": limit, "upstream_limit": fetch_limit,
+                "fetched_count": len(raw), "excluded_count": len(exclusions),
+                "duplicate_count": len(filtered) - len(unique), "eligible_count": len(unique),
+                "returned_count": len(selected), "omitted_by_limit": max(0, len(unique) - limit),
+                "exclusions": exclusions,
+                "coverage": "bounded_upstream_sample", "total_matching": None,
+                "has_more": None,
+                "limitations": [
+                    "X controls query matching and upstream selection; no exact or semantic guarantee.",
+                    "Date and phrase filters apply locally to the fetched sample, not all historical matches.",
+                    "Fewer results than requested does not establish completeness or representativeness.",
+                ],
+            }
+        return result
 
     async def read_user(
         self,
@@ -107,6 +165,7 @@ class XReaderService:
         include_reposts: bool = False,
         include_about: bool = False,
         detail: PostDetail = "full",
+        include_metrics: bool = False,
     ) -> dict[str, Any]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
@@ -147,7 +206,7 @@ class XReaderService:
 
         result: dict[str, Any] = {
             "user": normalize_user(profile),
-            "posts": [normalize_tweet(item, detail=detail) for item in kept],
+            "posts": [normalize_tweet(item, detail=detail, include_metrics=include_metrics) for item in kept],
         }
 
         if include_about:
@@ -170,6 +229,8 @@ class XReaderService:
         limit: int = 20,
         detail: PostDetail = "full",
         _include_anchor: bool = False,
+        include_metrics: bool = False,
+        include_sampling: bool = False,
     ) -> dict[str, Any]:
         if context not in (
             "none",
@@ -187,56 +248,75 @@ class XReaderService:
         if anchor is None:
             raise PostNotFound(f"X post not found: {post_id}")
 
-        result = {"post": normalize_tweet(anchor, detail=detail)}
-        if context == "none":
-            return result
-
+        anchor_retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        result: dict[str, Any] = {"post": normalize_tweet(anchor, detail=detail, include_metrics=include_metrics)}
+        raw = []
+        items = []
+        injected_count = 0
+        upstream_limit = 0
         if context == "parent":
             parent_id = anchor.get("inReplyToTweetId")
-            parent = None
             if parent_id is not None:
                 try:
                     parent_id = parse_post_locator(parent_id)
                 except ValueError:
                     pass
                 else:
+                    upstream_limit = 1
                     parent = await self.reader.tweet(parent_id)
-
-            parents = exclude_by_id([parent] if parent is not None else [], post_id)
+                    raw = [parent] if parent is not None else []
+            items = raw
+        elif context == "replies":
+            upstream_limit = overfetch_limit(limit)
+            raw = await self.reader.tweet_replies(post_id, upstream_limit)
+            items = [item for item in raw if str(item.get("inReplyToTweetId")) == str(post_id)]
+        elif context in ("author_thread", "conversation"):
+            upstream_limit = overfetch_limit(limit)
+            conversation_id = anchor.get("conversationId") or anchor["id"]
+            raw = await self.reader.conversation(int(conversation_id), upstream_limit)
+            items = raw
+            if str(anchor.get("id")) not in {str(item.get("id")) for item in items}:
+                items = items + [anchor]
+                injected_count = 1
+            items = [
+                item for item in items
+                if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
+            ]
+            if context == "author_thread":
+                items = [item for item in items if same_author(item, anchor)]
+        retrieved_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        filtered_out_count = len(raw) + injected_count - len(items)
+        unique = dedupe_by_id(items)
+        eligible = unique if _include_anchor and context != "parent" else exclude_by_id(unique, post_id)
+        selected = sort_by_created_at(eligible, descending=False)[:limit]
+        if context != "none":
             result["context"] = {
                 "type": context,
-                "posts": [normalize_tweet(item, detail=detail) for item in parents],
+                "posts": [normalize_tweet(item, detail=detail, include_metrics=include_metrics) for item in selected],
             }
-            return result
-
-        fetch_limit = overfetch_limit(limit)
-
-        if context == "replies":
-            replies = await self.reader.tweet_replies(post_id, fetch_limit)
-            replies = [item for item in replies if str(item.get("inReplyToTweetId")) == str(post_id)]
-            replies = sort_by_created_at(
-                _prepare_context_items(
-                    replies, post_id, include_anchor=_include_anchor
+        if include_sampling:
+            result["sampling"] = {
+                "retrieved_at": retrieved_at, "anchor_retrieved_at": anchor_retrieved_at,
+                "context": context, "requested_limit": limit, "upstream_limit": upstream_limit,
+                "fetched_count": len(raw), "anchor_injected_count": injected_count,
+                "filtered_out_count": filtered_out_count,
+                "duplicate_count": len(items) - len(unique),
+                "anchor_excluded_count": len(unique) - len(eligible),
+                "eligible_count": len(eligible), "returned_count": len(selected),
+                "omitted_by_limit": max(0, len(eligible) - limit),
+                "returned_order": (
+                    "none" if context == "none" else "direct_parent" if context == "parent"
+                    else "created_at_asc_within_upstream_sample"
                 ),
-                descending=False,
-            )[:limit]
-            result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in replies]}
-            return result
-
-        conversation_id = anchor.get("conversationId") or anchor["id"]
-        items = await self.reader.conversation(int(conversation_id), fetch_limit)
-        if str(anchor.get("id")) not in {str(item.get("id")) for item in items}:
-            items = items + [anchor]
-        items = [
-            item
-            for item in items
-            if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
-        ]
-        if context == "author_thread":
-            items = [item for item in items if same_author(item, anchor)]
-        items = sort_by_created_at(
-            _prepare_context_items(items, post_id, include_anchor=_include_anchor),
-            descending=False,
-        )[:limit]
-        result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in items]}
+                "coverage": (
+                    "single_post_lookup" if context == "none" else "direct_parent_lookup" if context == "parent"
+                    else "bounded_upstream_sample"
+                ),
+                "total_matching": None, "has_more": None,
+                "limitations": [
+                    "Counts describe context posts only; the anchor is returned separately.",
+                    "X selects the context sample before local filtering and ordering; completeness is unknown.",
+                    "Retrieval timestamps mark fetch completion, not exact or atomic metric measurement times.",
+                ],
+            }
         return result

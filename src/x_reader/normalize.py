@@ -48,11 +48,14 @@ def _iso(value: Any) -> str | None:
 
 
 def _tweet_links(tweet: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {"url": link.get("url"), "text": link.get("text")}
-        for link in (tweet.get("links") or [])
-        if isinstance(link, dict)
-    ]
+    links = []
+    for link in tweet.get("links") or []:
+        if not isinstance(link, dict):
+            continue
+        normalized = {"url": link.get("url"), "text": link.get("text")}
+        if normalized not in links:
+            links.append(normalized)
+    return links
 
 
 def _nested_tweet_preview(
@@ -127,7 +130,7 @@ def normalize_about(about: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def normalize_tweet(
-    tweet: dict[str, Any], *, detail: PostDetail = "full"
+    tweet: dict[str, Any], *, detail: PostDetail = "full", include_metrics: bool = False
 ) -> dict[str, Any]:
     user = tweet.get("user") or {}
 
@@ -157,16 +160,15 @@ def normalize_tweet(
         "reposted_post": _nested_tweet_preview(tweet.get("retweetedTweet"), detail=detail),
     }
 
+    if detail == "full" or include_metrics:
+        result["metrics"] = {
+            "replies": tweet.get("replyCount"), "reposts": tweet.get("retweetCount"),
+            "likes": tweet.get("likeCount"), "quotes": tweet.get("quoteCount"),
+            "bookmarks": tweet.get("bookmarkedCount"), "views": tweet.get("viewCount"),
+        }
+
     if detail == "full":
         result.update({
-            "metrics": {
-                "replies": tweet.get("replyCount"),
-                "reposts": tweet.get("retweetCount"),
-                "likes": tweet.get("likeCount"),
-                "quotes": tweet.get("quoteCount"),
-                "bookmarks": tweet.get("bookmarkedCount"),
-                "views": tweet.get("viewCount"),
-            },
             "links": _tweet_links(tweet),
             "media": tweet.get("media") or {},
             "mentions": [
@@ -196,6 +198,8 @@ def normalize_tweet(
             "text": result["text"],
             "author": {"username": result["author"]["username"]},
         }
+        if include_metrics:
+            minimal["metrics"] = result["metrics"]
         if result["reply_to_id"] is not None:
             minimal["reply_to_id"] = result["reply_to_id"]
         if result["conversation_id"] not in (None, result["id"], result["reply_to_id"]):

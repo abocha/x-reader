@@ -62,6 +62,12 @@ The richer tools accept three post detail levels:
 
 `search_x` and `read_x_user` default to `minimal`; `read_x_post` defaults to `full`. The older compatibility tools preserve their existing full response shape.
 
+For discussion research, `search_x` supports explicit recent/Top selection, local date
+and text filters, lightweight metrics, and an opt-in sampling receipt. The
+[discussion-research skill](plugin/skills/discussion-research/SKILL.md) guides evidence
+collection and interpretation. See [the retrieval contract and upstream findings](docs/discussion-research.md)
+for sampling limits, error codes, and the boundary between retrieval and analysis.
+
 ## Quick start
 
 ### Requirements
@@ -93,6 +99,8 @@ uv run x-reader-mcp
 Upstream operations have a 20-second timeout and a five-second account wait. Tool errors
 distinguish missing posts from account unavailability and timeouts. Each executed tool
 logs its duration, result count, and outcome to stderr without including request inputs.
+Operational failures include structured codes and retry guidance. Endpoint exhaustion
+does not mean the query is invalid or the topic has no discussion.
 
 ## Development
 
@@ -142,6 +150,7 @@ The unused HTTP adapter has been removed; the supported entrypoint is stdio MCP.
 checks the server's clean Git revision, six read-only tools, string-ID schemas, and one
 live post response. The runbook covers remote stdio commands and the separate plugin
 discovery check. This verification command requires live X access; the test suite does not.
+Use `--research-query 'YOUR PUBLIC TOPIC'` for the additional sampling/metrics acceptance checks.
 
 ## Engineering notes
 

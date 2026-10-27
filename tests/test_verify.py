@@ -148,3 +148,35 @@ def test_runtime_revision_tracks_real_checkout_and_dirty_sources(tmp_path, monke
     assert server_module._server_version() == f"{version("x-reader")}+git.{commit}"
     source.write_text("# changed source\n")
     assert server_module._server_version() == f"{version("x-reader")}+git.{commit}.dirty"
+
+
+async def test_research_acceptance_checks_use_bounded_calls_and_real_receipts(monkeypatch):
+    monkeypatch.setattr(server_module, "_server_version", lambda: f"0.3.0+git.{COMMIT}")
+
+    class Reader:
+        def __init__(self):
+            self.calls = []
+
+        async def tweet(self, post_id):
+            self.calls.append(("tweet", post_id))
+            return {"id": post_id, "likeCount": 3}
+
+        async def search(self, query, limit, *, ranking="recent"):
+            self.calls.append(("search", query, limit, ranking))
+            return [{"id": 1, "likeCount": 2}]
+
+        async def tweet_replies(self, post_id, limit):
+            self.calls.append(("replies", post_id, limit))
+            return [{"id": 2, "inReplyToTweetId": post_id}]
+
+    reader = Reader()
+    async with Client(server_module.create_mcp_server(reader)) as client:
+        report = await verify_deployment(client, COMMIT, POST_ID, "topic")
+    assert report["status"] == "ok"
+    assert {key: value["returned_count"] for key, value in report["research"].items()} == {
+        "recent": 1, "top": 1, "replies": 1,
+    }
+    assert reader.calls == [
+        ("tweet", int(POST_ID)), ("search", "topic", 40, "recent"),
+        ("search", "topic", 40, "top"), ("tweet", int(POST_ID)), ("replies", int(POST_ID), 40),
+    ]

@@ -515,3 +515,46 @@ def test_only_full_projection_enumerates_rich_metadata(detail):
     assert ("links" in result) is (detail == "full")
     if detail != "minimal":
         assert result["lang"] == "und"
+
+
+@pytest.mark.parametrize("detail", ["minimal", "compact"])
+def test_lightweight_metrics_do_not_require_full_metadata(detail):
+    class UnreadList(list):
+        def __iter__(self):
+            raise AssertionError("Rich metadata must not be enumerated for lightweight metrics")
+
+    result = normalize_tweet({
+        "id": 1, "likeCount": 3, "viewCount": None,
+        "links": UnreadList([{"url": "https://example.com"}]),
+        "mentionedUsers": UnreadList([{"id": 2}]),
+        "media": {"photos": ["large"]},
+    }, detail=detail, include_metrics=True)
+    assert result["id"] == "1"
+    assert result["metrics"] == {
+        "replies": None, "reposts": None, "likes": 3,
+        "quotes": None, "bookmarks": None, "views": None,
+    }
+    assert "links" not in result
+    assert "media" not in result
+    assert "mentions" not in result
+
+
+@pytest.mark.parametrize("field", [None, "quotedTweet", "retweetedTweet"])
+def test_link_deduplication_preserves_distinct_labels_queries_and_order(field):
+    links = [
+        {"url": "https://example.com/?preset=featured", "text": "example.com", "tcourl": "one"},
+        {"url": "https://example.com/?preset=featured", "text": "example.com", "tcourl": "two"},
+        {"url": "https://example.com/?preset=other", "text": "example.com"},
+        {"url": "https://example.com/?preset=featured", "text": "different label"},
+    ]
+    post = {"id": 1, "links": links}
+    tweet = {"id": 2, field: post} if field else post
+    result = normalize_tweet(tweet)
+    if field:
+        result = result["quoted_post" if field == "quotedTweet" else "reposted_post"]
+    assert result["links"] == [
+        {"url": "https://example.com/?preset=featured", "text": "example.com"},
+        {"url": "https://example.com/?preset=other", "text": "example.com"},
+        {"url": "https://example.com/?preset=featured", "text": "different label"},
+    ]
+    assert len(links) == 4

@@ -4,18 +4,20 @@ import asyncio
 import json
 import logging
 import subprocess
+from datetime import datetime
 from functools import wraps
 from importlib.metadata import version
+from math import ceil
 from pathlib import Path
 from time import monotonic
 from typing import Annotated, Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from x_reader.errors import PostNotFound, XReaderError
+from x_reader.errors import PostNotFound, RequestRateLimited, XReaderError
 from x_reader.normalize import PostDetail
 from x_reader.rate_limit import SlidingWindowRateLimiter
 from x_reader.reader import TwscrapeReader
@@ -41,6 +43,20 @@ def _server_version() -> str:
     except (OSError, subprocess.SubprocessError):
         return package_version
     return f"{package_version}+git.{revision}" + (".dirty" if dirty else "")
+
+
+def _tool_failure(error: XReaderError) -> CallToolResult:
+    payload = {
+        "code": error.code, "category": error.category, "message": str(error),
+        "retryable": error.retryable, "retry_after_seconds": error.retry_after_seconds,
+        "endpoint": error.endpoint,
+    }
+    # Keep execution errors inside MCP results. The text copy survives hosts that
+    # flatten structuredContent or label every execution error INVALID_ARGUMENT.
+    return CallToolResult(
+        is_error=True, structured_content={"error": payload},
+        content=[TextContent(type="text", text=json.dumps({"error": payload}))],
+    )
 
 
 READ_ONLY = ToolAnnotations(
@@ -72,7 +88,7 @@ def create_mcp_server(
             try:
                 if not limiter.allow("mcp"):
                     outcome = "rate_limited"
-                    raise ToolError("Rate limit exceeded")
+                    raise RequestRateLimited("Rate limit exceeded", retry_after_seconds=ceil(rate_window_seconds))
                 result = await operation(*args, **kwargs)
                 result_count = (
                     len(result.get("posts", []))
@@ -85,7 +101,7 @@ def create_mcp_server(
                 raise ToolError(str(exc)) from exc
             except XReaderError as exc:
                 outcome = exc.category
-                raise ToolError(str(exc)) from exc
+                return _tool_failure(exc)
             except asyncio.CancelledError:
                 outcome = "cancelled"
                 raise
@@ -112,6 +128,11 @@ def create_mcp_server(
             "what people are saying on X/Twitter about a topic, event, person, "
             "product, announcement, rumor, outage, or current discussion. "
             "Supply a query, authors, or both; authors accept usernames, @handles, and profile URLs. "
+            "Ranking recent uses Latest and returns newest first; top preserves X Top order. "
+            "since/until require timezones, with until exclusive; these date filters and all "
+            "required_terms (case-insensitive substrings in post text) apply locally to a bounded sample. "
+            "include_sampling adds query, exclusions, timestamps, and explicit coverage limits. "
+            "include_metrics adds lightweight counters without media. "
             "Minimal (default) suits broad discovery and larger result sets; "
             "compact adds structure/provenance; full adds metrics, media, links, cards, and mentions when useful."
         ),
@@ -123,8 +144,22 @@ def create_mcp_server(
         authors: list[str] | None = None,
         limit: Limit = 20,
         detail: PostDetail = "minimal",
+        ranking: Literal["recent", "top"] = "recent",
+        since: datetime | None = None,
+        until: datetime | None = None,
+        include_replies: bool = True,
+        include_reposts: bool = True,
+        required_terms: list[str] | None = None,
+        include_metrics: bool = False,
+        include_sampling: bool = False,
     ) -> dict[str, Any]:
-        return await service.search(query=query, authors=authors, limit=limit, detail=detail)
+        return await service.search(
+            query=query, authors=authors, limit=limit, detail=detail,
+            ranking=ranking, since=since, until=until,
+            include_replies=include_replies, include_reposts=include_reposts,
+            required_terms=required_terms, include_metrics=include_metrics,
+            include_sampling=include_sampling,
+        )
 
     @mcp.tool(
         title="Get X user posts",
@@ -171,7 +206,8 @@ def create_mcp_server(
             "Read a user's recent public posts and profile, optionally including replies, "
             "reposts, and account details. User accepts a username, @handle, or X/Twitter profile URL. "
             "Minimal (default) suits timeline exploration; compact adds structure/provenance; "
-            "full adds metrics, media, links, cards, and mentions when useful."
+            "full adds metrics, media, links, cards, and mentions when useful. "
+            "include_metrics adds counters to minimal/compact without adding media."
         ),
         annotations=READ_ONLY,
     )
@@ -183,13 +219,14 @@ def create_mcp_server(
         include_reposts: bool = False,
         include_about: bool = False,
         detail: PostDetail = "minimal",
+        include_metrics: bool = False,
     ) -> dict[str, Any]:
         return await service.read_user(
             user, limit=limit,
             include_replies=include_replies,
             include_reposts=include_reposts,
             include_about=include_about,
-            detail=detail,
+            detail=detail, include_metrics=include_metrics,
         )
 
     @mcp.tool(
@@ -200,7 +237,9 @@ def create_mcp_server(
             "author_thread, replies, or conversation. Post accepts a post ID as a decimal "
             "string or X/Twitter post URL. Full (default) suits focused drill-down; "
             "for larger context reads use minimal for discovery or compact for structure/provenance "
-            "when rich metadata is unnecessary."
+            "when rich metadata is unnecessary. include_metrics adds counters without media. "
+            "Context is a bounded upstream sample; result count is not conversation completeness. "
+            "include_sampling adds retrieval timestamps and context selection counts with unknown completeness."
         ),
         annotations=READ_ONLY,
     )
@@ -216,8 +255,13 @@ def create_mcp_server(
         ] = "none",
         limit: Limit = 20,
         detail: PostDetail = "full",
+        include_metrics: bool = False,
+        include_sampling: bool = False,
     ) -> dict[str, Any]:
-        return await service.read_post(post, context=context, limit=limit, detail=detail)
+        return await service.read_post(
+            post, context=context, limit=limit, detail=detail, include_metrics=include_metrics,
+            include_sampling=include_sampling,
+        )
 
     return mcp
 
