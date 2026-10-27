@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from x_reader.errors import PostNotFound, UserNotFound
@@ -10,7 +9,6 @@ from x_reader.filters import (
     exclude_by_id,
     same_author,
     sort_by_created_at,
-    timestamp,
 )
 from x_reader.locators import parse_post_locator, parse_username
 from x_reader.normalize import (
@@ -69,10 +67,6 @@ class XReaderService:
         *,
         query: str | None = None,
         authors: list[str] | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        include_replies: bool = True,
-        include_reposts: bool = True,
         limit: int = 20,
         detail: PostDetail = "full",
     ) -> dict[str, Any]:
@@ -84,13 +78,6 @@ class XReaderService:
             raise ValueError("Either query or authors must be provided")
         if limit < 1:
             raise ValueError("limit must be at least 1")
-        if since is not None and (not isinstance(since, datetime) or since.tzinfo is None or since.utcoffset() is None):
-            raise ValueError("since must be a timezone-aware datetime")
-        if until is not None and (not isinstance(until, datetime) or until.tzinfo is None or until.utcoffset() is None):
-            raise ValueError("until must be a timezone-aware datetime")
-        if since and until and since > until:
-            raise ValueError("since must not be after until")
-
         fetch_limit = overfetch_limit(limit)
 
         raw = await self.reader.search(
@@ -105,15 +92,6 @@ class XReaderService:
             author = item.get("user") or {}
             author_name = (author.get("username") or "").lower()
             if author_list and author_name not in allowed_author_names:
-                continue
-            created = timestamp(item.get("date"))
-            if since and (created is None or created < since):
-                continue
-            if until and (created is None or created > until):
-                continue
-            if not include_replies and item.get("inReplyToTweetId") is not None:
-                continue
-            if not include_reposts and item.get("retweetedTweet") is not None:
                 continue
             filtered.append(item)
 
@@ -233,26 +211,6 @@ class XReaderService:
 
         fetch_limit = overfetch_limit(limit)
 
-        if context == "author_thread":
-            conversation_id = anchor.get("conversationId") or anchor["id"]
-            items = await self.reader.conversation(int(conversation_id), fetch_limit)
-            if str(anchor.get("id")) not in {str(item.get("id")) for item in items}:
-                items = items + [anchor]
-            thread = [
-                item
-                for item in items
-                if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
-                and same_author(item, anchor)
-            ]
-            thread = sort_by_created_at(
-                _prepare_context_items(
-                    thread, post_id, include_anchor=_include_anchor
-                ),
-                descending=False,
-            )[:limit]
-            result["context"] = {"type": context, "posts": [normalize_tweet(item, detail=detail) for item in thread]}
-            return result
-
         if context == "replies":
             replies = await self.reader.tweet_replies(post_id, fetch_limit)
             replies = [item for item in replies if str(item.get("inReplyToTweetId")) == str(post_id)]
@@ -274,6 +232,8 @@ class XReaderService:
             for item in items
             if str(item.get("conversationId") or item.get("id")) == str(conversation_id)
         ]
+        if context == "author_thread":
+            items = [item for item in items if same_author(item, anchor)]
         items = sort_by_created_at(
             _prepare_context_items(items, post_id, include_anchor=_include_anchor),
             descending=False,

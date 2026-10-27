@@ -4,7 +4,7 @@
 
 A small read-only X/Twitter reader built for tool-using LLM clients built on top of [twscrape](https://github.com/vladkens/twscrape)
 
-`x-reader` keeps upstream access, domain behavior, normalization, and transport adapters separate. The same service layer is exposed through MCP for agent/tool use and through a small FastAPI compatibility API. Production access is via a private Secure MCP Tunnel rather than a public HTTP ingress.
+`x-reader` keeps upstream access, domain behavior, normalization, and its MCP adapter separate. The x-reader plugin uses the service over stdio MCP through a private Secure MCP Tunnel.
 
 ## What it does
 
@@ -14,7 +14,7 @@ A small read-only X/Twitter reader built for tool-using LLM clients built on top
 - normalizes unstable upstream objects into a smaller, predictable public shape;
 - preserves large X post IDs as strings at MCP boundaries to avoid JavaScript precision loss;
 - offers `minimal`, `compact`, and `full` post projections so LLM callers can trade metadata for payload size without causing extra upstream requests;
-- keeps both MCP and HTTP surfaces read-only and rate-limited.
+- keeps all MCP tools read-only and rate-limited.
 
 This is an independent project and is not affiliated with X Corp.
 
@@ -24,10 +24,8 @@ This is an independent project and is not affiliated with X Corp.
 flowchart LR
     ChatGPT["MCP / agent client"] --> Tunnel["Secure MCP Tunnel"]
     Tunnel --> MCP["MCP adapter"]
-    HTTPClient["HTTP client"] --> HTTP["FastAPI adapter"]
 
     MCP --> Service["XReaderService"]
-    HTTP --> Service
 
     Service --> Reader["TwscrapeReader"]
     Reader --> DB[("accounts.db")]
@@ -35,12 +33,11 @@ flowchart LR
 
     Service --> Normalize["normalization + detail projection"]
     Normalize --> MCP
-    Normalize --> HTTP
 ```
 
 The core design rule is simple: adapters translate requests, while `XReaderService` owns filtering, ordering, deduplication, timeline semantics, and context behavior. Upstream access stays in `reader.py`; stable output shapes stay in `normalize.py`.
 
-That separation matters here because the MCP surface evolved substantially without requiring a second implementation of the same behavior in the HTTP adapter.
+The service owns behavior shared by all six MCP tools; the adapter owns tool schemas and transport error handling.
 
 ## MCP surface
 
@@ -64,18 +61,6 @@ The richer tools accept three post detail levels:
 | `full` | focused drill-down | compact fields plus metrics, media, links, mentions, hashtags, sensitivity, and cards |
 
 `search_x` and `read_x_user` default to `minimal`; `read_x_post` defaults to `full`. The older compatibility tools preserve their existing full response shape.
-
-## HTTP compatibility API
-
-The FastAPI adapter remains useful for local development and compatibility, but it is not the supported production ingress.
-
-| Route | Purpose |
-| --- | --- |
-| `GET /health` | process health |
-| `GET /v1/search` | search posts |
-| `GET /v1/users/{username}/posts` | recent user posts |
-| `GET /v1/tweets/{tweet_id}` | one post |
-| `GET /v1/tweets/{tweet_id}/thread` | author's thread |
 
 ## Quick start
 
@@ -105,13 +90,9 @@ Start the MCP server over stdio:
 uv run x-reader-mcp
 ```
 
-For local HTTP development:
-
-```bash
-uv run uvicorn x_reader.app:app --host 127.0.0.1 --port 8789
-```
-
-Do not expose that development command directly to the public internet without adding an appropriate authentication and proxy boundary.
+Upstream operations have a 20-second timeout and a five-second account wait. Tool errors
+distinguish missing posts from account unavailability and timeouts. Each executed tool
+logs its duration, result count, and outcome to stderr without including request inputs.
 
 ## Development
 
@@ -133,7 +114,7 @@ src/x_reader/
   service.py      # use-case behavior and timeline semantics
   normalize.py    # stable public representations and detail projections
   mcp_server.py   # MCP adapter and tool schemas
-  app.py          # FastAPI compatibility adapter
+  verify.py       # read-only deployment/schema/large-ID verification command
   locators.py     # user/post locator parsing and validation
   filters.py      # shared filtering, ordering, and classification helpers
   rate_limit.py   # in-process sliding-window limiter
@@ -155,17 +136,22 @@ ChatGPT / MCP client
   -> X/Twitter
 ```
 
-There is no public production FastAPI/Caddy ingress for x-reader. See [the Secure MCP Tunnel runbook](docs/secure-mcp-tunnel-runbook.md) for the deployment and operational details.
+The unused HTTP adapter has been removed; the supported entrypoint is stdio MCP. See [the Secure MCP Tunnel runbook](docs/secure-mcp-tunnel-runbook.md) for the deployment and operational details.
+
+`uv run x-reader-verify --expected-commit FULL_SHA --post-id LARGE_PUBLIC_POST_ID`
+checks the server's clean Git revision, six read-only tools, string-ID schemas, and one
+live post response. The runbook covers remote stdio commands and the separate plugin
+discovery check. This verification command requires live X access; the test suite does not.
 
 ## Engineering notes
 
 A few constraints shaped the implementation:
 
 - **Stable IDs at tool boundaries.** X post IDs exceed JavaScript's safe integer range, so MCP schemas require decimal strings where precision matters.
-- **One behavioral core.** MCP and HTTP adapters reuse the same service instead of duplicating filtering or context logic.
+- **One behavioral core.** All MCP tools reuse the same service instead of duplicating filtering or context logic.
 - **Projection without refetching.** `minimal`, `compact`, and `full` are output projections over the same fetched records, not different retrieval paths.
-- **Compatibility is explicit.** Older HTTP routes and MCP tools are kept as compatibility surfaces while richer read tools evolve.
-- **Private production ingress.** The service runs behind a secure tunnel and stdio MCP boundary rather than exposing its HTTP adapter publicly.
+- **Compatibility is explicit.** Older MCP tools are kept as compatibility surfaces while richer read tools evolve.
+- **Private production ingress.** The service runs behind a secure tunnel and stdio MCP boundary.
 
 ## Security
 

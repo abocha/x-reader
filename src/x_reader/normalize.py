@@ -127,7 +127,7 @@ def normalize_about(about: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def normalize_tweet(
-    tweet: dict[str, Any], *, detail: PostDetail = "full", nested: bool = False
+    tweet: dict[str, Any], *, detail: PostDetail = "full"
 ) -> dict[str, Any]:
     user = tweet.get("user") or {}
 
@@ -152,45 +152,41 @@ def normalize_tweet(
         "is_pinned": bool(tweet.get("is_pinned", False)),
         "conversation_id": _str_or_none(tweet.get("conversationId")),
         "reply_to_id": _str_or_none(tweet.get("inReplyToTweetId")),
-        "metrics": {
-            "replies": tweet.get("replyCount"),
-            "reposts": tweet.get("retweetCount"),
-            "likes": tweet.get("likeCount"),
-            "quotes": tweet.get("quoteCount"),
-            "bookmarks": tweet.get("bookmarkedCount"),
-            "views": tweet.get("viewCount"),
-        },
-        "links": _tweet_links(tweet),
-        "media": tweet.get("media") or {},
         "lang": tweet.get("lang"),
-        "mentions": [
-            {"username": mention.get("username"), "id": _str_or_none(mention.get("id"))}
-            for mention in (tweet.get("mentionedUsers") or [])
-            if isinstance(mention, dict)
-        ],
-        "hashtags": [
-            str(hashtag)
-            for hashtag in (tweet.get("hashtags") or [])
-            if hashtag is not None
-        ],
-        "possibly_sensitive": tweet.get("possibly_sensitive"),
-        "card": tweet.get("card"),
-        "quoted_post": None,
-        "reposted_post": None,
+        "quoted_post": _nested_tweet_preview(tweet.get("quotedTweet"), detail=detail),
+        "reposted_post": _nested_tweet_preview(tweet.get("retweetedTweet"), detail=detail),
     }
 
-    if detail != "full":
-        for field in ("metrics", "links", "media", "mentions", "hashtags", "possibly_sensitive", "card"):
-            del result[field]
+    if detail == "full":
+        result.update({
+            "metrics": {
+                "replies": tweet.get("replyCount"),
+                "reposts": tweet.get("retweetCount"),
+                "likes": tweet.get("likeCount"),
+                "quotes": tweet.get("quoteCount"),
+                "bookmarks": tweet.get("bookmarkedCount"),
+                "views": tweet.get("viewCount"),
+            },
+            "links": _tweet_links(tweet),
+            "media": tweet.get("media") or {},
+            "mentions": [
+                {"username": mention.get("username"), "id": _str_or_none(mention.get("id"))}
+                for mention in (tweet.get("mentionedUsers") or [])
+                if isinstance(mention, dict)
+            ],
+            "hashtags": [
+                str(hashtag)
+                for hashtag in (tweet.get("hashtags") or [])
+                if hashtag is not None
+            ],
+            "possibly_sensitive": tweet.get("possibly_sensitive"),
+            "card": tweet.get("card"),
+        })
 
     if tweet.get("timeline_item_type") is not None:
         result["timeline_item_type"] = tweet["timeline_item_type"]
     if tweet.get("appeared_on_timeline_of") is not None:
         result["appeared_on_timeline_of"] = tweet["appeared_on_timeline_of"]
-
-    if not nested:
-        result["quoted_post"] = _nested_tweet_preview(tweet.get("quotedTweet"), detail=detail)
-        result["reposted_post"] = _nested_tweet_preview(tweet.get("retweetedTweet"), detail=detail)
 
     if detail == "minimal":
         minimal = {

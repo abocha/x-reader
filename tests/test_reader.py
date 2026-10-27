@@ -1,15 +1,15 @@
 import asyncio
-import importlib
 
 import pytest
+from twscrape.accounts_pool import NoAccountError
+from twscrape.http import NetworkError
+from twscrape.queue_client import GqlFeaturesOutdatedError
+
+from x_reader.errors import AccountUnavailable, UpstreamTimeout, UpstreamUnavailable
+from x_reader.reader import TwscrapeReader
 
 
 def test_twscrape_reader_search_returns_plain_dicts():
-    reader_module = importlib.import_module("x_reader.reader")
-    TwscrapeReader = getattr(reader_module, "TwscrapeReader", None)
-
-    assert TwscrapeReader is not None
-
     class FakeTweet:
         def __init__(self, tweet_id: int):
             self.tweet_id = tweet_id
@@ -41,138 +41,6 @@ def test_twscrape_reader_search_returns_plain_dicts():
         {"id": 1, "user": {"username": "OpenAI"}},
         {"id": 2, "user": {"username": "OpenAI"}},
     ]
-
-
-def test_twscrape_reader_user_posts_resolves_username_to_id():
-    reader_module = importlib.import_module("x_reader.reader")
-    TwscrapeReader = reader_module.TwscrapeReader
-
-    class FakeUser:
-        id = 42
-
-    class FakeTweet:
-        def __init__(self, tweet_id: int):
-            self.tweet_id = tweet_id
-
-        def dict(self) -> dict:
-            return {
-                "id": self.tweet_id,
-                "user": {"username": "OpenAI"},
-            }
-
-    class FakeApi:
-        async def user_by_login(self, username: str):
-            assert username == "OpenAI"
-            return FakeUser()
-
-        async def user_tweets(self, uid: int, limit: int):
-            assert uid == 42
-            assert limit == 2
-
-            for tweet_id in [10, 11]:
-                yield FakeTweet(tweet_id)
-
-    reader = TwscrapeReader(api=FakeApi())
-
-    result = asyncio.run(
-        reader.user_posts(
-            username="OpenAI",
-            limit=2,
-        )
-    )
-
-    assert result == [
-        {"id": 10, "user": {"username": "OpenAI"}},
-        {"id": 11, "user": {"username": "OpenAI"}},
-    ]
-
-
-def test_twscrape_reader_tweet_returns_plain_dict():
-    reader_module = importlib.import_module("x_reader.reader")
-    TwscrapeReader = reader_module.TwscrapeReader
-
-    class FakeTweet:
-        def dict(self) -> dict:
-            return {
-                "id": 123,
-                "user": {"username": "OpenAI"},
-            }
-
-    class FakeApi:
-        async def tweet_details(self, tweet_id: int):
-            assert tweet_id == 123
-            return FakeTweet()
-
-    reader = TwscrapeReader(api=FakeApi())
-
-    result = asyncio.run(reader.tweet(tweet_id=123))
-
-    assert result == {
-        "id": 123,
-        "user": {"username": "OpenAI"},
-    }
-
-
-def test_twscrape_reader_thread_returns_plain_dicts():
-    reader_module = importlib.import_module("x_reader.reader")
-    TwscrapeReader = reader_module.TwscrapeReader
-
-    class FakeTweet:
-        def __init__(self, tweet_id: int):
-            self.tweet_id = tweet_id
-
-        def dict(self) -> dict:
-            return {
-                "id": self.tweet_id,
-                "user": {"username": "OpenAI"},
-            }
-
-    class FakeApi:
-        async def tweet_thread(self, tweet_id: int, limit: int):
-            assert tweet_id == 123
-            assert limit == 20
-
-            for item_id in [123, 124, 999]:
-                yield FakeTweet(item_id)
-
-    reader = TwscrapeReader(api=FakeApi())
-
-    result = asyncio.run(
-        reader.thread(
-            tweet_id=123,
-            limit=20,
-        )
-    )
-
-    assert result == [
-        {"id": 123, "user": {"username": "OpenAI"}},
-        {"id": 124, "user": {"username": "OpenAI"}},
-        {"id": 999, "user": {"username": "OpenAI"}},
-    ]
-
-
-def test_twscrape_reader_user_posts_returns_none_when_user_missing():
-    reader_module = importlib.import_module("x_reader.reader")
-    TwscrapeReader = reader_module.TwscrapeReader
-
-    class FakeApi:
-        async def user_by_login(self, username: str):
-            assert username == "does_not_exist"
-
-        async def user_tweets(self, uid: int, limit: int):
-            raise AssertionError("user_tweets must not be called")
-            yield
-
-    reader = TwscrapeReader(api=FakeApi())
-
-    result = asyncio.run(
-        reader.user_posts(
-            username="does_not_exist",
-            limit=20,
-        )
-    )
-
-    assert result is None
 
 
 @pytest.mark.parametrize(
@@ -223,7 +91,6 @@ def test_twscrape_reader_user_posts_returns_none_when_user_missing():
 )
 @pytest.mark.parametrize("missing", [False, True])
 def test_twscrape_reader_single_items(method, api_method, argument, payload, missing):
-    reader_module = importlib.import_module("x_reader.reader")
     calls = []
 
     class FakeItem:
@@ -236,7 +103,7 @@ def test_twscrape_reader_single_items(method, api_method, argument, payload, mis
             return None if missing else FakeItem()
 
     setattr(FakeApi, api_method, FakeApi.fetch)
-    reader = reader_module.TwscrapeReader(api=FakeApi())
+    reader = TwscrapeReader(api=FakeApi())
 
     result = asyncio.run(getattr(reader, method)(argument))
 
@@ -249,62 +116,12 @@ def test_twscrape_reader_single_items(method, api_method, argument, payload, mis
 @pytest.mark.parametrize(
     ("method", "api_method"),
     [
-        ("user_posts", "user_tweets"),
-        ("user_posts_and_replies", "user_tweets_and_replies"),
-    ],
-)
-@pytest.mark.parametrize("missing", [False, True])
-@pytest.mark.parametrize("empty", [False, True])
-def test_twscrape_reader_user_timelines(method, api_method, missing, empty):
-    reader_module = importlib.import_module("x_reader.reader")
-    calls = []
-    payloads = [] if empty else [
-        {"id": 10, "inReplyToTweetId": None},
-        {"id": 11, "inReplyToTweetId": 9},
-    ]
-
-    class FakeUser:
-        id = 42
-
-    class FakeTweet:
-        def __init__(self, payload: dict):
-            self.payload = payload
-
-        def dict(self) -> dict:
-            return self.payload.copy()
-
-    class FakeApi:
-        async def user_by_login(self, username: str):
-            calls.append(("user_by_login", username))
-            return None if missing else FakeUser()
-
-        async def timeline(self, uid: int, *, limit: int):
-            calls.append((api_method, uid, limit))
-            for payload in payloads:
-                yield FakeTweet(payload)
-
-    setattr(FakeApi, api_method, FakeApi.timeline)
-    reader = reader_module.TwscrapeReader(api=FakeApi())
-
-    result = asyncio.run(getattr(reader, method)(username="OpenAI", limit=2))
-
-    assert result == (None if missing else payloads)
-    assert calls == (
-        [("user_by_login", "OpenAI")]
-        if missing
-        else [("user_by_login", "OpenAI"), (api_method, 42, 2)]
-    )
-
-
-@pytest.mark.parametrize(
-    ("method", "api_method"),
-    [
         ("user_posts_by_id", "user_tweets"),
         ("user_posts_and_replies_by_id", "user_tweets_and_replies"),
     ],
 )
-def test_twscrape_reader_id_timelines_skip_profile_lookup(method, api_method):
-    reader_module = importlib.import_module("x_reader.reader")
+@pytest.mark.parametrize("empty", [False, True])
+def test_twscrape_reader_id_timelines_skip_profile_lookup(method, api_method, empty):
     calls = []
 
     class FakeTweet:
@@ -317,14 +134,15 @@ def test_twscrape_reader_id_timelines_skip_profile_lookup(method, api_method):
 
         async def timeline(self, user_id, *, limit):
             calls.append((api_method, user_id, limit))
-            yield FakeTweet()
+            if not empty:
+                yield FakeTweet()
 
     setattr(FakeApi, api_method, FakeApi.timeline)
-    reader = reader_module.TwscrapeReader(api=FakeApi())
+    reader = TwscrapeReader(api=FakeApi())
 
     result = asyncio.run(getattr(reader, method)(user_id=42, limit=2))
 
-    assert result == [{"id": 10}]
+    assert result == ([] if empty else [{"id": 10}])
     assert calls == [(api_method, 42, 2)]
 
 
@@ -333,12 +151,10 @@ def test_twscrape_reader_id_timelines_skip_profile_lookup(method, api_method):
     [
         ("tweet_replies", "tweet_replies"),
         ("conversation", "tweet_thread"),
-        ("thread", "tweet_thread"),
     ],
 )
 @pytest.mark.parametrize("empty", [False, True])
 def test_twscrape_reader_tweet_timelines(method, api_method, empty):
-    reader_module = importlib.import_module("x_reader.reader")
     calls = []
     payloads = [] if empty else [
         {
@@ -371,7 +187,7 @@ def test_twscrape_reader_tweet_timelines(method, api_method, empty):
                 yield FakeTweet(payload)
 
     setattr(FakeApi, api_method, FakeApi.timeline)
-    reader = reader_module.TwscrapeReader(api=FakeApi())
+    reader = TwscrapeReader(api=FakeApi())
 
     result = asyncio.run(getattr(reader, method)(tweet_id=123, limit=20))
 
@@ -380,19 +196,74 @@ def test_twscrape_reader_tweet_timelines(method, api_method, empty):
     assert all(type(item) is dict for item in result)
 
 
-def test_twscrape_reader_thread_delegates_to_conversation():
-    reader_module = importlib.import_module("x_reader.reader")
-    calls = []
-    payloads = [{"id": 123}]
+def test_empty_account_pool_reports_unavailability_instead_of_empty_search(tmp_path):
+    reader = TwscrapeReader(db_path=tmp_path / "accounts.db")
+    with pytest.raises(AccountUnavailable, match="No X account is available"):
+        asyncio.run(reader.search("topic", 1))
 
-    class Reader(reader_module.TwscrapeReader):
-        async def conversation(self, tweet_id: int, limit: int) -> list[dict]:
-            calls.append((tweet_id, limit))
-            return payloads
 
-    reader = Reader(api=object())
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("error,expected", [
+    (NoAccountError("private account"), AccountUnavailable),
+    (NetworkError("private proxy"), UpstreamUnavailable),
+    (GqlFeaturesOutdatedError("private response"), UpstreamUnavailable),
+])
+def test_upstream_errors_are_classified_without_exposing_details(streamed, error, expected):
+    class FakeApi:
+        async def tweet_details(self, tweet_id):
+            raise error
 
-    result = asyncio.run(reader.thread(tweet_id=123, limit=20))
+        async def search(self, query, limit):
+            raise error
+            yield
 
-    assert result is payloads
-    assert calls == [(123, 20)]
+    reader = TwscrapeReader(api=FakeApi())
+    with pytest.raises(expected) as caught:
+        asyncio.run(reader.search("topic", 1) if streamed else reader.tweet(1))
+    assert "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_upstream_timeout_aborts_waiting_and_closes_stream(streamed):
+    closed = []
+
+    class FakeApi:
+        async def tweet_details(self, tweet_id):
+            await asyncio.Event().wait()
+
+        async def search(self, query, limit):
+            try:
+                await asyncio.Event().wait()
+                yield
+            finally:
+                closed.append(True)
+
+    reader = TwscrapeReader(api=FakeApi(), request_timeout_seconds=0.01)
+    with pytest.raises(UpstreamTimeout, match="timed out"):
+        asyncio.run(reader.search("topic", 1) if streamed else reader.tweet(1))
+    assert closed == ([True] if streamed else [])
+
+
+def test_cancelling_a_stream_releases_it_and_preserves_cancellation():
+    async def run():
+        started = asyncio.Event()
+        closed = asyncio.Event()
+
+        class FakeApi:
+            async def search(self, query, limit):
+                try:
+                    started.set()
+                    await asyncio.Event().wait()
+                    yield
+                finally:
+                    closed.set()
+
+        reader = TwscrapeReader(api=FakeApi())
+        task = asyncio.create_task(reader.search("topic", 1))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed.is_set()
+
+    asyncio.run(run())

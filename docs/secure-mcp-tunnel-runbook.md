@@ -21,18 +21,22 @@ ChatGPT web
 Confirmed live behavior: ChatGPT successfully called `Search X` through the plugin and received normalized post arrays.
 
 The supported production path is the Secure MCP Tunnel to `x-reader-mcp` over stdio. Production
-`x-reader` has no Caddy or public HTTP dependency. The FastAPI `/v1/...` adapter remains an
-application compatibility surface, but it is not part of the current production deployment. The
-former port-8789/Caddy ingress was retired as legacy infrastructure on 2026-09-29.
+`x-reader` has no Caddy or public HTTP dependency. The unused FastAPI `/v1/...` adapter has
+been removed. The former port-8789/Caddy ingress was retired as legacy infrastructure on
+2026-09-29.
 
 ## x-reader MCP surface
 
-The MCP server exposes four read-only tools:
+The MCP server exposes six read-only tools used by the plugin:
 
 - `search_x`
 - `get_x_user_posts`
 - `get_x_post`
 - `get_x_thread`
+- `read_x_user`
+- `read_x_post`
+
+Post IDs passed to `get_x_post`, `get_x_thread`, and `read_x_post` must be decimal strings to preserve large X IDs. `read_x_post` also accepts post URLs. `search_x` and `read_x_user` default to minimal detail; `read_x_post` and the legacy `get_x_*` tools default to full detail.
 
 The project is installable as a normal `src/` layout package and exposes the console entrypoint:
 
@@ -46,7 +50,7 @@ x-reader-mcp
 X_READER_DB_PATH=/home/ubuntu/x-reader/accounts.db
 ```
 
-The MCP adapter has its own in-process request budget of 60 calls/hour. REST keeps its existing limiter separately.
+The MCP adapter has an in-process request budget of 60 calls/hour. The plugin uses stdio MCP; the unused REST adapter and its dependencies have been removed.
 
 ## VPS prerequisites
 
@@ -65,12 +69,8 @@ cd ~/x-reader
 git pull --ff-only
 uv sync --frozen
 uv run pytest -q
-```
-
-Known-good test state after MCP cleanup:
-
-```text
-44 passed, 1 existing Starlette deprecation warning
+uv run ruff check .
+uv run ty check .
 ```
 
 Local stdio smoke test:
@@ -81,6 +81,55 @@ X_READER_DB_PATH=/home/ubuntu/x-reader/accounts.db \
 ```
 
 Expected behavior: process waits silently for MCP input. Stop with Ctrl-C.
+
+## Verify a deployment and refresh plugin discovery
+
+Use the full reviewed commit SHA as `EXPECTED_COMMIT` and an existing public post ID above
+JavaScript's safe integer limit (2^53-1) as `POST_ID`. Run under the service's user and
+environment, including `X_READER_DB_PATH`:
+
+```bash
+uv run x-reader-verify --expected-commit "$EXPECTED_COMMIT" --post-id "$POST_ID"
+```
+
+The command starts a stdio server, checks its reported source revision, requires all six
+read-only tools with string post-ID schemas, and performs exactly one `get_x_post` read.
+Success prints a JSON report with the revision, tool names, and exact returned post ID.
+Failure exits nonzero. Dirty checkouts, missing Git identity, numeric ID schemas, unavailable
+accounts, and mismatched post IDs cannot pass. No post text or credentials enter the report.
+
+From a workstation, `--command` can target the same executable used by the tunnel profile:
+
+```bash
+uv run x-reader-verify --expected-commit "$EXPECTED_COMMIT" --post-id "$POST_ID" \
+  --command ssh YOUR_VPS 'cd /home/ubuntu/x-reader && X_READER_DB_PATH=/home/ubuntu/x-reader/accounts.db .venv/bin/x-reader-mcp'
+```
+
+The checker starts a fresh process; it does not inspect or restart the active tunnel daemon.
+After an authorized deployment/restart, refresh the installed plugin's tool discovery and
+check that `get_x_post.tweet_id`, `get_x_thread.tweet_id`, and `read_x_post.post` are strings.
+Read the same large-ID post through the plugin and confirm the returned string matches.
+If direct verification passes but the plugin still advertises numbers, inspect its selected
+connection and cached discovery before making code changes. The checker does not modify
+the plugin or its connection.
+
+## Request limits and diagnostics
+
+Each upstream read waits at most five seconds for an available account and has a
+20-second operation timeout, including account waits and upstream retries. A compound
+tool call can make several such reads. Unavailable accounts and timed-out reads return
+explicit tool errors; they do not masquerade as empty results or missing posts.
+
+Each executed tool emits one JSON diagnostic line to stderr with `event`, `tool`,
+`elapsed_ms`, `result_count`, and `outcome`. Result counts include the anchor and context
+posts returned by the tool. Outcomes distinguish success, not-found, validation errors,
+rate limiting, account unavailability, timeout, upstream unavailability, cancellation, and
+unexpected failures. SDK schema validation happens before tool execution.
+
+These diagnostic lines contain no queries, handles, post content, credentials, or raw
+exception messages. They share stderr with existing SDK/twscrape logs; stdout remains
+reserved for MCP. In a supervised deployment, inspect them with the existing journal
+commands below. No separate logging service is required.
 
 ## tunnel-client installation
 
@@ -445,7 +494,6 @@ systemd
 Not required for current production use:
 
 - slim large media payloads only after inspecting real `twscrape` payload shapes
-- decide whether REST and MCP need a shared cross-process rate budget
 - optionally document or automate SSH port-forward access to `/ui`
 
 Keep the implementation bounded. The current architecture is already sufficient for the intended single-user read-only workflow.
